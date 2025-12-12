@@ -58,34 +58,66 @@ class ModelAdapter {
   }
 
   async _callOpenAI(systemPrompt, userPrompt, maxTokens) {
+    if (!this.apiKey) {
+      throw new Error('OPENAI_API_KEY is not set. Please configure it in your environment variables.');
+    }
+
     const messages = [
       { role: 'system', content: systemPrompt },
       { role: 'user', content: userPrompt }
     ];
 
-    const response = await axios.post(
-      'https://api.openai.com/v1/chat/completions',
-      {
-        model: this.modelName,
-        messages,
-        max_tokens: maxTokens,
-        temperature: 0.7,
-        top_p: 0.9
-      },
-      {
-        headers: {
-          'Authorization': `Bearer ${this.apiKey}`,
-          'Content-Type': 'application/json'
+    try {
+      const response = await axios.post(
+        'https://api.openai.com/v1/chat/completions',
+        {
+          model: this.modelName,
+          messages,
+          max_tokens: maxTokens,
+          temperature: 0.7,
+          top_p: 0.9
+        },
+        {
+          headers: {
+            'Authorization': `Bearer ${this.apiKey}`,
+            'Content-Type': 'application/json'
+          }
         }
-      }
-    );
+      );
 
-    return {
-      content: response.data.choices[0].message.content,
-      promptTokens: response.data.usage.prompt_tokens,
-      completionTokens: response.data.usage.completion_tokens,
-      totalTokens: response.data.usage.total_tokens
-    };
+      return {
+        content: response.data.choices[0].message.content,
+        promptTokens: response.data.usage.prompt_tokens,
+        completionTokens: response.data.usage.completion_tokens,
+        totalTokens: response.data.usage.total_tokens
+      };
+    } catch (error) {
+      // Provide more detailed error messages
+      if (error.response) {
+        const status = error.response.status;
+        const errorData = error.response.data;
+        
+        if (status === 401) {
+          throw new Error('Invalid OpenAI API key. Please check your OPENAI_API_KEY environment variable.');
+        }
+        if (status === 404) {
+          throw new Error(`Model '${this.modelName}' not found. Try setting AI_MODEL_NAME=gpt-3.5-turbo in your environment variables.`);
+        }
+        if (status === 429) {
+          throw new Error('OpenAI API rate limit exceeded. Please try again later.');
+        }
+        if (status === 500 || status === 502 || status === 503) {
+          throw new Error('OpenAI API service is temporarily unavailable. Please try again later.');
+        }
+        
+        // Return OpenAI's error message if available
+        const errorMessage = errorData?.error?.message || errorData?.error?.code || `OpenAI API error: ${status}`;
+        throw new Error(errorMessage);
+      }
+      
+      // Network or other errors
+      throw error;
+    }
   }
 
   _isRetryable(error) {
