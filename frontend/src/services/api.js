@@ -4,16 +4,15 @@
 
 import axios from 'axios';
 
-const API_BASE_URL = '/api';
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api';
 // Create axios instance with token support
 const api = axios.create({
   baseURL: API_BASE_URL,
-  baseURL: `${API_BASE_URL}/api`,
   headers: {
     'Content-Type': 'application/json'
   }
 });
+
 
 // Add token to requests
 api.interceptors.request.use(config => {
@@ -65,4 +64,5 @@ export function handleAPIError(error) {
 }
 
 export default api;
+
 
