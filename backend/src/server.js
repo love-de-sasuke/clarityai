@@ -33,11 +33,21 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', message: 'ClarityAI backend is running' });
 });
 
-// API Routes
+console.log('[ROUTES] Registering auth routes...');
 app.use('/api/auth', authRoutes);
+console.log('[ROUTES] Auth routes registered');
+
+console.log('[ROUTES] Registering AI feature routes...');
 app.use('/api/ai', aiFeatureRoutes);
+console.log('[ROUTES] AI feature routes registered');
+
+console.log('[ROUTES] Registering roadmap routes...');
 app.use('/api/ai', roadmapRoutes);
+console.log('[ROUTES] Roadmap routes registered');
+
+console.log('[ROUTES] Registering document routes...');
 app.use('/api/document', documentRoutes);
+console.log('[ROUTES] Document routes registered');
 
 // 404 handler
 app.use((req, res) => {
@@ -80,5 +90,6 @@ async function startServer() {
 startServer();
 
 export default app;
+
 
 
