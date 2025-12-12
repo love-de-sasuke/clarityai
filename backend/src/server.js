@@ -69,7 +69,7 @@ async function startServer() {
     app.listen(PORT, () => {
       console.log(`[SERVER] ClarityAI backend running on port ${PORT}`);
       console.log(`[SERVER] Environment: ${process.env.NODE_ENV || 'development'}`);
-      console.log(`[SERVER] CORS origin: ${process.env.FRONTEND_URL || 'http://localhost:3000'}`);
+      console.log(`[SERVER] CORS origin: ${process.env.CORS_ORIGIN || 'http://localhost:3000'}`);
     });
   } catch (error) {
     console.error('[ERROR] Failed to start server:', error);
@@ -80,4 +80,5 @@ async function startServer() {
 startServer();
 
 export default app;
+
 
