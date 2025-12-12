@@ -4,12 +4,23 @@
 
 import axios from 'axios';
 
-// Use environment variable for backend URL, fallback to relative path for dev
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api';
+// Backend URL configuration
+// Set VITE_API_BASE_URL environment variable:
+// - For local development: http://localhost:5000 (or your local backend port)
+// - For production: https://your-backend-url.com (your actual backend URL)
+// Backend routes are prefixed with /api, so we append /api to the base URL
+const BACKEND_URL = import.meta.env.VITE_API_BASE_URL;
+
+if (!BACKEND_URL) {
+  console.warn('VITE_API_BASE_URL is not set. Please configure it in your environment variables.');
+}
+
+// Construct API base URL - if BACKEND_URL is set, use it; otherwise default to relative /api for same-origin
+const API_BASE_URL = BACKEND_URL ? `${BACKEND_URL}/api` : '/api';
 
 // Create axios instance with token support
 const api = axios.create({
-  baseURL: `${API_BASE_URL}/api`,
+  baseURL: API_BASE_URL,
   headers: {
     'Content-Type': 'application/json'
   }
