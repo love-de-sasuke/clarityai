@@ -4,7 +4,9 @@
 
 import axios from 'axios';
 
+// Use environment variable for backend URL, fallback to relative path for dev
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api';
+
 // Create axios instance with token support
 const api = axios.create({
   baseURL: `${API_BASE_URL}/api`,
@@ -12,7 +14,6 @@ const api = axios.create({
     'Content-Type': 'application/json'
   }
 });
-
 
 // Add token to requests
 api.interceptors.request.use(config => {
@@ -22,6 +23,22 @@ api.interceptors.request.use(config => {
   }
   return config;
 });
+
+// Handle response errors (especially 401 - unauthorized)
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response?.status === 401) {
+      // Token is invalid or expired
+      localStorage.removeItem('authToken');
+      // Redirect to login if not already there
+      if (window.location.pathname !== '/login' && window.location.pathname !== '/register') {
+        window.location.href = '/login';
+      }
+    }
+    return Promise.reject(error);
+  }
+);
 
 // Auth API
 export const authAPI = {
@@ -64,6 +81,3 @@ export function handleAPIError(error) {
 }
 
 export default api;
-
-
-
