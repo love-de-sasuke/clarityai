@@ -243,8 +243,6 @@ class PostProcessor {
     if (codeBlockContent) {
       console.log('[PostProcessor] Extracted from code block, length:', codeBlockContent.length);
       console.log('[PostProcessor] First 200 chars of extracted:', codeBlockContent.substring(0, 200));
-      
-      // Try direct parse of extracted content
       try {
         const parsed = JSON.parse(codeBlockContent);
         console.log('[PostProcessor] Successfully parsed extracted JSON');
@@ -252,25 +250,13 @@ class PostProcessor {
       } catch (e) {
         console.log('[PostProcessor] Code block content parse failed:', e.message);
         console.log('[PostProcessor] Attempting JSON repair...');
-        
-        // Try repairing JSON
         const repaired = this._repairJSON(codeBlockContent);
         if (repaired) {
           console.log('[PostProcessor] JSON repair successful');
           return repaired;
         }
-        
         console.log('[PostProcessor] JSON repair also failed');
         console.log('[PostProcessor] Error details:', e.message);
-        if (e.message.includes('position')) {
-          const posMatch = e.message.match(/position (\d+)/);
-          if (posMatch) {
-            const pos = parseInt(posMatch[1]);
-            const start = Math.max(0, pos - 100);
-            const end = Math.min(codeBlockContent.length, pos + 100);
-            console.log('[PostProcessor] Error context:', codeBlockContent.substring(start, end));
-          }
-        }
       }
     } else {
       console.log('[PostProcessor] No code block found in output');
@@ -280,39 +266,42 @@ class PostProcessor {
     const jsonObject = this._extractJSONObject(cleaned);
     if (jsonObject) {
       console.log('[PostProcessor] Extracted JSON object, length:', jsonObject.length);
-      
       try {
         return JSON.parse(jsonObject);
       } catch (e) {
         console.log('[PostProcessor] Extracted object parse failed, attempting repair...');
-        
         const repaired = this._repairJSON(jsonObject);
         if (repaired) {
           console.log('[PostProcessor] JSON repair successful');
           return repaired;
         }
-        
         console.log('[PostProcessor] Object extraction error:', e.message);
       }
     }
 
-    // Step 4: Fallback - find first { to last }
+    // Step 4: Fallback - find first "{" to last "}" and try parsing/repair
     const firstBrace = cleaned.indexOf('{');
     const lastBrace = cleaned.lastIndexOf('}');
     if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
-      const fallbackJson = cleaned.substring(firstBrace, lastBrace + 1);
+      const possibleJson = cleaned.substring(firstBrace, lastBrace + 1);
       try {
-        return JSON.parse(fallbackJson);
+        return JSON.parse(possibleJson);
       } catch (e) {
-        const repaired = this._repairJSON(fallbackJson);
-        if (repaired) {
-          return repaired;
+        // Try to fix common issue: trailing commas
+        let fixed = possibleJson.replace(/,\s*([}\]])/g, '$1');
+        try {
+          return JSON.parse(fixed);
+        } catch (err) {
+          // Try final repair step
+          const repaired = this._repairJSON(possibleJson);
+          if (repaired) {
+            return repaired;
+          }
         }
-        console.log('[PostProcessor] Fallback extraction failed:', e.message);
       }
     }
 
-    // Step 5: If all else fails and retries available, signal for retry
+    // If all else fails and retries available, signal for retry
     if (retries < 2 && retryCallback) {
       console.log('[PostProcessor] All extraction methods failed, attempting corrective re-prompt...');
       return null; // Signal for retry
