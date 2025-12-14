@@ -1,6 +1,5 @@
 /**
  * Prompt Manager - Generates prompts based on feature type and user params
- * Per markdown.md section 4: Prompt templates
  */
 
 const SYSTEM_PROMPT = `You are ClarityAI, an expert assistant. You MUST return ONLY valid JSON.
@@ -14,17 +13,7 @@ CRITICAL RULES:
 6. If response would exceed token limit, shorten content but NEVER truncate JSON structure
 7. Escape all quotes inside strings properly (use \\" for quotes within strings)
 8. Use commas correctly between array elements and object properties
-9. Ensure all strings have proper opening and closing quotes
-
-EXAMPLE CORRECT OUTPUT:
-{"summary": "This is a summary", "confidence": 0.8}
-
-EXAMPLE WRONG OUTPUT (DON'T DO THIS):
-\`\`\`json
-{"summary": "This is a summary", "confidence": "high"}
-\`\`\`
-
-FAILURE TO FOLLOW THESE RULES WILL RESULT IN APPLICATION ERRORS.`;
+9. Ensure all strings have proper opening and closing quotes`;
 
 class PromptManager {
   generatePrompt(featureType, userParams, contextText = '') {
@@ -88,8 +77,7 @@ IMPORTANT:
 - Do NOT use markdown or code blocks
 - Do NOT wrap JSON in backticks
 - Start with { and end with }
-- If too long, shorten content but keep JSON structure complete
-- Ensure all arrays are properly closed with ] and objects with }`;
+- If too long, shorten content but keep JSON structure complete`;
   }
 
   _generateRoadmapPrompt(params) {
@@ -113,10 +101,8 @@ EXAMPLE WEEK FORMAT:
 
 IMPORTANT:
 - Return ONLY JSON, no other text
-- Ensure all URLs are valid and properly quoted
-- If ${timeframeWeeks} weeks is too long, still return complete JSON with all weeks
-- Do NOT truncate or cut off any arrays/objects
-- Confidence MUST be a number (e.g., 0.8 not "high")`;
+- Confidence MUST be a number (e.g., 0.8 not "high")
+- Do NOT truncate or cut off any arrays/objects`;
   }
 
   _generateRewritePrompt(params) {
@@ -137,18 +123,16 @@ RETURN ONLY VALID JSON with these exact fields:
 
 IMPORTANT:
 - Return ONLY plain JSON, no markdown
-- All 3 rewrites must be in different tones (e.g., formal, casual, persuasive)
-- Ensure each rewrite is complete and coherent
+- All 3 rewrites must be in different tones
 - Do NOT cut off any text mid-sentence
-- Confidence MUST be a decimal number, not a word
-- Start with { and end with }`;
+- Confidence MUST be a decimal number, not a word`;
   }
 
   _generateDocumentPrompt(params, textChunk) {
     const { isChunk = false } = params;
     
     if (isChunk) {
-      return `Summarize the following document chunk (approx ${textChunk.length} characters):
+      return `Summarize the following document chunk:
 
 CHUNK CONTENT:
 ${textChunk}
@@ -163,7 +147,7 @@ IMPORTANT:
 - Start with { and end with }
 - Ensure all arrays are properly closed`;
     } else {
-      return `Provide a comprehensive summary of this document (approx ${textChunk.length} characters):
+      return `Provide a comprehensive summary of this document:
 
 DOCUMENT CONTENT:
 ${textChunk}
@@ -177,36 +161,8 @@ RETURN ONLY VALID JSON with these exact fields:
 IMPORTANT:
 - Return only JSON, no markdown or code blocks
 - Do NOT wrap in backticks
-- Start with { and end with }
-- If document is long, focus on key points but keep JSON complete`;
+- Start with { and end with }`;
     }
-  }
-
-  /**
-   * Generate a corrective prompt for when JSON parsing fails
-   */
-  generateCorrectivePrompt(featureType, originalOutput, error) {
-    const correctivePrompts = {
-      explain: `Your previous response had invalid JSON. The error was: "${error}"
-                Please re-answer with ONLY valid JSON, no markdown, no code blocks.`,
-      roadmap: `Your previous roadmap response had JSON errors: "${error}"
-                Please re-generate the roadmap with ONLY valid JSON. Remember: confidence must be a NUMBER (0.0-1.0), not a word.`,
-      rewrite: `Your rewrite response had invalid JSON: "${error}"
-                Please provide ONLY valid JSON. Confidence must be a NUMBER (e.g., 0.8), not "high" or "medium".`,
-      document: `Your document summary had JSON errors: "${error}"
-                 Please provide ONLY valid JSON output, no markdown formatting.`
-    };
-
-    return {
-      systemPrompt: `CRITICAL: Your previous response had invalid JSON. This time, return ONLY valid JSON. No markdown, no code blocks, no extra text. Start with { and end with }.`,
-      userPrompt: correctivePrompts[featureType] || `Please fix your JSON output. Error: ${error}`,
-      metadata: {
-        maxTokens: 1500,
-        stopSequences: ['\n}\n', '\n}', '}\n', '}'],
-        feature: featureType,
-        isCorrective: true
-      }
-    };
   }
 }
 
