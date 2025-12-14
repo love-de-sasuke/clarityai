@@ -94,33 +94,47 @@ class PostProcessor {
   }
 
   /**
-   * Attempt to repair common JSON syntax errors
+   * Fix common JSON issues from model outputs
    */
   _repairJSON(jsonStr) {
+    console.log('[PostProcessor] Starting JSON repair on string of length:', jsonStr.length);
+    
     try {
       // Try parsing first - if it works, no repair needed
       return JSON.parse(jsonStr);
     } catch (e) {
-      console.log('[PostProcessor] JSON repair attempt, error:', e.message);
+      console.log('[PostProcessor] Initial parse failed:', e.message);
       
       let repaired = jsonStr;
+      let originalRepaired = repaired;
 
-      // Step 1: Fix unterminated strings (common issue seen in logs)
-      // Count quotes to ensure they're balanced
+      // FIX 1: Fix unterminated strings (common Gemini issue)
       const quoteCount = (repaired.match(/"/g) || []).length;
       if (quoteCount % 2 !== 0) {
-        // Add missing closing quote at the end
-        if (!repaired.endsWith('"')) {
-          repaired = repaired + '"';
-        }
-        try {
-          return JSON.parse(repaired);
-        } catch (e1) {
-          // Continue with other repairs
+        // Find the last quote and add closing quote if needed
+        const lastQuotePos = repaired.lastIndexOf('"');
+        const afterLastQuote = repaired.substring(lastQuotePos + 1);
+        
+        // If last quote is not preceded by backslash (not escaped) and not followed by proper structure
+        if (!repaired[lastQuotePos - 1] === '\\') {
+          // Check if we need to add closing quote
+          const context = repaired.substring(Math.max(0, lastQuotePos - 50), Math.min(repaired.length, lastQuotePos + 50));
+          console.log('[PostProcessor] Context around unmatched quote:', context);
+          
+          // Try adding closing quote at end if it seems like the string was cut off
+          if (repaired.endsWith('"') === false) {
+            repaired = repaired + '"';
+            console.log('[PostProcessor] Added missing closing quote');
+            try {
+              return JSON.parse(repaired);
+            } catch (e2) {
+              // Continue with other repairs
+            }
+          }
         }
       }
 
-      // Step 2: Remove trailing commas (safest fix)
+      // FIX 2: Remove trailing commas (safest fix)
       repaired = repaired.replace(/,\s*([}\]])/g, '$1');
       try {
         return JSON.parse(repaired);
@@ -128,112 +142,233 @@ class PostProcessor {
         // Continue
       }
 
-      // Step 3: Fix missing commas in arrays/objects
-      let arrayFixed = repaired;
-      
-      // Fix missing commas - be very specific to avoid breaking valid JSON
-      // Pattern 1: "item1" "item2" in arrays
-      arrayFixed = arrayFixed.replace(/"\s+"(?=\s*[,\]])/g, '", "');
-      
-      // Pattern 2: number "text" or number number (in arrays)
-      arrayFixed = arrayFixed.replace(/(\d+)\s+(")(?=\s*[,\]])/g, '$1, $2');
-      arrayFixed = arrayFixed.replace(/(\d+)\s+(\d+)(?=\s*[,\]])/g, '$1, $2');
-      
-      // Pattern 3: } "key" or ] "key" (object/array followed by quote - missing comma)
-      arrayFixed = arrayFixed.replace(/([}\]])\s*(")/g, '$1, $2');
-      
-      // Pattern 4: "value" "key": (in objects - missing comma between properties)
-      arrayFixed = arrayFixed.replace(/"\s+"([a-zA-Z_][a-zA-Z0-9_]*":)/g, '", "$1');
-      
-      if (arrayFixed !== repaired) {
-        try {
-          console.log('[PostProcessor] Array/object comma fixes applied');
-          return JSON.parse(arrayFixed);
-        } catch (e2) {
-          repaired = arrayFixed;
-        }
-      }
-
-      // Step 4: Try using error position to fix missing commas
+      // FIX 3: Fix missing commas in arrays/objects (common Gemini issue)
+      // First, try to identify where commas are missing using the error position
       const errorMatch = e.message.match(/position (\d+)/);
       if (errorMatch) {
         const errorPos = parseInt(errorMatch[1]);
-        console.log('[PostProcessor] Error at position:', errorPos);
+        console.log('[PostProcessor] Parsing error at position:', errorPos);
         
-        // If error is about missing comma, try adding one
+        // Get context around error
+        const contextStart = Math.max(0, errorPos - 20);
+        const contextEnd = Math.min(repaired.length, errorPos + 20);
+        const context = repaired.substring(contextStart, contextEnd);
+        console.log('[PostProcessor] Error context:', context);
+        
+        // Common pattern: "text1" "text2" without comma
         if (e.message.includes("Expected ','") || e.message.includes("Expected ',' or ']'")) {
-          // Look for natural break points around error position
-          const searchWindow = 50;
-          const start = Math.max(0, errorPos - searchWindow);
-          const end = Math.min(repaired.length, errorPos + searchWindow);
-          const context = repaired.substring(start, end);
+          // Look for pattern: quote whitespace quote
+          const missingCommaRegex = /"(\s+)"/g;
+          if (missingCommaRegex.test(context)) {
+            repaired = repaired.replace(/"\s+"/g, '", "');
+            console.log('[PostProcessor] Fixed missing comma between quotes');
+            try {
+              return JSON.parse(repaired);
+            } catch (e3) {
+              // Continue
+            }
+          }
           
-          // Try to find a good place to insert comma
-          const patterns = [
-            { regex: /("\s*")/, insert: '"', "'" },
-            { regex: /(\]\s*")/, insert: ']"', ",'" },
-            { regex: /(}\s*")/, insert: '}"', ",'" },
-            { regex: /(\d\s*")/, insert: /\d/, ",'" },
-          ];
-          
-          for (const pattern of patterns) {
-            const match = context.match(pattern.regex);
-            if (match) {
-              const replacement = context.replace(pattern.regex, (match, p1) => {
-                return match.replace(/\s+"/, '", "');
-              });
-              const newRepaired = repaired.substring(0, start) + replacement + repaired.substring(end);
-              try {
-                console.log('[PostProcessor] Pattern-based comma insertion');
-                return JSON.parse(newRepaired);
-              } catch (e3) {
-                // Continue
-              }
+          // Look for pattern: } whitespace " or ] whitespace "
+          const missingCommaAfterBrace = /([}\]])"(\s+")/g;
+          if (missingCommaAfterBrace.test(context)) {
+            repaired = repaired.replace(/([}\]])"(\s+")/g, '$1", "$2');
+            console.log('[PostProcessor] Fixed missing comma after brace/brace');
+            try {
+              return JSON.parse(repaired);
+            } catch (e4) {
+              // Continue
             }
           }
         }
       }
 
-      console.log('[PostProcessor] All repair attempts failed');
-      return null;
+      // FIX 4: Fix truncated JSON (common in roadmap output)
+      if (repaired.includes('"milest') && !repaired.includes('"milestone"')) {
+        // Looks like "milestone" was truncated
+        repaired = repaired.replace(/"milest/, '"milestone": "Incomplete milestone"');
+        console.log('[PostProcessor] Fixed truncated milestone field');
+        try {
+          return JSON.parse(repaired);
+        } catch (e5) {
+          // Continue
+        }
+      }
+
+      // FIX 5: Auto-close incomplete arrays/objects
+      const openBraces = (repaired.match(/{/g) || []).length;
+      const closeBraces = (repaired.match(/}/g) || []).length;
+      const openArrays = (repaired.match(/\[/g) || []).length;
+      const closeArrays = (repaired.match(/\]/g) || []).length;
+
+      if (openBraces > closeBraces) {
+        const missingBraces = openBraces - closeBraces;
+        repaired = repaired + '}'.repeat(missingBraces);
+        console.log(`[PostProcessor] Added ${missingBraces} missing closing braces`);
+      }
+
+      if (openArrays > closeArrays) {
+        const missingArrays = openArrays - closeArrays;
+        repaired = repaired + ']'.repeat(missingArrays);
+        console.log(`[PostProcessor] Added ${missingArrays} missing closing brackets`);
+      }
+
+      // FIX 6: Last resort - clean up any remaining issues
+      // Replace single quotes with double quotes (if they're used for JSON keys/values)
+      repaired = repaired.replace(/'([^']*)'/g, '"$1"');
+      
+      // Fix missing colons in objects
+      repaired = repaired.replace(/"\s*\{/g, '": {');
+      
+      // Fix unescaped newlines in strings
+      repaired = repaired.replace(/([^\\])\n/g, '$1\\n');
+
+      try {
+        const result = JSON.parse(repaired);
+        console.log('[PostProcessor] JSON repair successful after multiple attempts');
+        return result;
+      } catch (finalError) {
+        console.log('[PostProcessor] All repair attempts failed:', finalError.message);
+        
+        // If we made changes but still failed, log the problematic area
+        if (repaired !== originalRepaired) {
+          console.log('[PostProcessor] Repaired string (first 500 chars):', repaired.substring(0, 500));
+        }
+        
+        return null;
+      }
     }
   }
 
   /**
-   * Normalize confidence value - convert string "high"/"medium"/"low" to numbers
+   * Normalize confidence value - convert string to number
    */
   _normalizeConfidence(data) {
-    if (data.confidence) {
-      if (typeof data.confidence === 'string') {
+    if (data && typeof data === 'object' && 'confidence' in data) {
+      const conf = data.confidence;
+      
+      if (typeof conf === 'string') {
         const confidenceMap = {
           'high': 0.9,
           'medium': 0.6,
           'low': 0.3,
           'very high': 0.95,
-          'very low': 0.1
+          'very low': 0.1,
+          'very-high': 0.95,
+          'very-low': 0.1
         };
-        const normalized = confidenceMap[data.confidence.toLowerCase()];
-        if (normalized !== undefined) {
-          data.confidence = normalized;
-          console.log('[PostProcessor] Normalized confidence from string to number:', normalized);
+        
+        const lowerConf = conf.toLowerCase().trim();
+        const mappedValue = confidenceMap[lowerConf];
+        
+        if (mappedValue !== undefined) {
+          data.confidence = mappedValue;
+          console.log(`[PostProcessor] Normalized confidence from "${conf}" to ${mappedValue}`);
         } else {
-          // Try to parse as number
-          const parsed = parseFloat(data.confidence);
+          // Try to parse as float
+          const parsed = parseFloat(conf);
           if (!isNaN(parsed)) {
-            data.confidence = parsed;
+            data.confidence = Math.max(0, Math.min(1, parsed));
+            console.log(`[PostProcessor] Parsed confidence string "${conf}" to ${data.confidence}`);
           } else {
             // Default to 0.5 if unrecognized
             data.confidence = 0.5;
+            console.log(`[PostProcessor] Could not parse confidence "${conf}", defaulting to 0.5`);
           }
         }
-      }
-      
-      // Ensure confidence is within bounds
-      if (typeof data.confidence === 'number') {
-        data.confidence = Math.max(0, Math.min(1, data.confidence));
+      } else if (typeof conf === 'number') {
+        // Ensure it's between 0 and 1
+        data.confidence = Math.max(0, Math.min(1, conf));
+      } else {
+        // Invalid type, default to 0.5
+        data.confidence = 0.5;
       }
     }
     return data;
+  }
+
+  /**
+   * Complete emergency recovery for severely damaged JSON
+   */
+  _emergencyJSONRecovery(text) {
+    console.log('[PostProcessor] Starting emergency JSON recovery');
+    
+    // Step 1: Find the main JSON object
+    const firstBrace = text.indexOf('{');
+    if (firstBrace === -1) {
+      console.log('[PostProcessor] No opening brace found for emergency recovery');
+      return null;
+    }
+
+    // Step 2: Extract everything from first brace onward
+    let extracted = text.substring(firstBrace);
+    
+    // Step 3: Count braces and auto-close
+    let braceCount = 0;
+    let inString = false;
+    let escapeNext = false;
+    
+    for (let i = 0; i < extracted.length; i++) {
+      const char = extracted[i];
+      
+      if (escapeNext) {
+        escapeNext = false;
+        continue;
+      }
+      
+      if (char === '\\') {
+        escapeNext = true;
+        continue;
+      }
+      
+      if (char === '"' && !escapeNext) {
+        inString = !inString;
+        continue;
+      }
+      
+      if (!inString) {
+        if (char === '{') braceCount++;
+        if (char === '}') braceCount--;
+      }
+    }
+    
+    // Step 4: Add missing closing braces
+    if (braceCount > 0) {
+      extracted += '}'.repeat(braceCount);
+      console.log(`[PostProcessor] Added ${braceCount} missing closing braces`);
+    }
+    
+    // Step 5: Fix common truncated patterns
+    const fixes = [
+      // Fix truncated strings (ends with quote but no closing quote in structure)
+      { pattern: /"([^"]*)$/, replacement: '"$1"' },
+      // Fix truncated array (ends with [
+      { pattern: /\[\s*$/, replacement: '[]' },
+      // Fix truncated object key (ends with : without value)
+      { pattern: /"([^"]*)":\s*$/, replacement: '"$1": ""' },
+      // Fix incomplete milestone (from error logs)
+      { pattern: /"milest\s*$/, replacement: '"milestone": "Week completed"' },
+      // Fix missing comma before closing brace
+      { pattern: /("[^"]*")\s*}/, replacement: '$1 }' }
+    ];
+    
+    for (const fix of fixes) {
+      if (fix.pattern.test(extracted)) {
+        extracted = extracted.replace(fix.pattern, fix.replacement);
+        console.log(`[PostProcessor] Applied fix: ${fix.pattern}`);
+      }
+    }
+    
+    // Step 6: Final validation
+    try {
+      const parsed = JSON.parse(extracted);
+      console.log('[PostProcessor] Emergency recovery successful!');
+      return parsed;
+    } catch (e) {
+      console.log('[PostProcessor] Emergency recovery failed:', e.message);
+      console.log('[PostProcessor] Final attempt output (first 300 chars):', extracted.substring(0, 300));
+      return null;
+    }
   }
 
   /**
@@ -244,22 +379,24 @@ class PostProcessor {
       throw new Error('Invalid output: expected string');
     }
 
+    console.log(`[PostProcessor] Parsing JSON output (length: ${output.length})`);
+    
     // Clean the output first
     let cleaned = output.trim();
-
+    
     // Step 1: Try direct parse
     try {
       const parsed = JSON.parse(cleaned);
+      console.log('[PostProcessor] Direct parse successful');
       return this._normalizeConfidence(parsed);
     } catch (error) {
-      console.log('[PostProcessor] Direct parse failed, attempting extraction...');
+      console.log('[PostProcessor] Direct parse failed:', error.message);
     }
 
     // Step 2: Extract from markdown code blocks (highest priority for Gemini)
     const codeBlockContent = this._extractFromCodeBlocks(cleaned);
     if (codeBlockContent) {
       console.log('[PostProcessor] Extracted from code block, length:', codeBlockContent.length);
-      console.log('[PostProcessor] First 200 chars of extracted:', codeBlockContent.substring(0, 200));
       try {
         const parsed = JSON.parse(codeBlockContent);
         console.log('[PostProcessor] Successfully parsed extracted JSON');
@@ -269,13 +406,10 @@ class PostProcessor {
         console.log('[PostProcessor] Attempting JSON repair...');
         const repaired = this._repairJSON(codeBlockContent);
         if (repaired) {
-          console.log('[PostProcessor] JSON repair successful');
+          console.log('[PostProcessor] JSON repair successful from code block');
           return this._normalizeConfidence(repaired);
         }
-        console.log('[PostProcessor] JSON repair also failed');
       }
-    } else {
-      console.log('[PostProcessor] No code block found in output');
     }
 
     // Step 3: Extract JSON object using balanced brace matching
@@ -289,10 +423,9 @@ class PostProcessor {
         console.log('[PostProcessor] Extracted object parse failed, attempting repair...');
         const repaired = this._repairJSON(jsonObject);
         if (repaired) {
-          console.log('[PostProcessor] JSON repair successful');
+          console.log('[PostProcessor] JSON repair successful from extracted object');
           return this._normalizeConfidence(repaired);
         }
-        console.log('[PostProcessor] Object extraction error:', e.message);
       }
     }
 
@@ -301,77 +434,39 @@ class PostProcessor {
     const lastBrace = cleaned.lastIndexOf('}');
     if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
       const possibleJson = cleaned.substring(firstBrace, lastBrace + 1);
+      console.log('[PostProcessor] Trying first-to-last brace extraction');
       try {
         const parsed = JSON.parse(possibleJson);
         return this._normalizeConfidence(parsed);
       } catch (e) {
-        // Try to fix common issues
-        let fixed = possibleJson.replace(/,\s*([}\]])/g, '$1');
-        // Fix unterminated strings
-        if (!fixed.endsWith('"') && (fixed.match(/"/g) || []).length % 2 !== 0) {
-          fixed = fixed + '"';
-        }
-        try {
-          const parsed = JSON.parse(fixed);
-          return this._normalizeConfidence(parsed);
-        } catch (err) {
-          // Try final repair step
-          const repaired = this._repairJSON(possibleJson);
-          if (repaired) {
-            return this._normalizeConfidence(repaired);
-          }
+        const repaired = this._repairJSON(possibleJson);
+        if (repaired) {
+          return this._normalizeConfidence(repaired);
         }
       }
     }
 
-    // Step 5: Emergency recovery - if output starts with '{' but is truncated
-    if (cleaned.startsWith('{')) {
-      const trimmedForRecovery = cleaned;
-      const openBraces = (trimmedForRecovery.match(/{/g) || []).length;
-      const closeBraces = (trimmedForRecovery.match(/}/g) || []).length;
-      
-      if (openBraces > closeBraces) {
-        // Add missing closing braces
-        let recovered = trimmedForRecovery;
-        for (let i = 0; i < openBraces - closeBraces; i++) {
-          recovered += '}';
-        }
-        
-        // Fix unterminated strings
-        const quoteCount = (recovered.match(/"/g) || []).length;
-        if (quoteCount % 2 !== 0) {
-          recovered = recovered + '"';
-        }
-        
-        // Close any open arrays
-        const openArrays = (recovered.match(/\[/g) || []).length;
-        const closeArrays = (recovered.match(/\]/g) || []).length;
-        for (let i = 0; i < openArrays - closeArrays; i++) {
-          recovered += ']';
-        }
-        
-        try {
-          console.log('[PostProcessor] EMERGENCY RECOVERY: Attempting to salvage truncated JSON');
-          const parsed = JSON.parse(recovered);
-          console.log('[PostProcessor] Emergency recovery successful');
-          return this._normalizeConfidence(parsed);
-        } catch (e) {
-          console.log('[PostProcessor] EMERGENCY RECOVERY failed:', e.message);
-        }
-      }
+    // Step 5: Emergency recovery for severely damaged JSON
+    console.log('[PostProcessor] All standard methods failed, attempting emergency recovery');
+    const emergencyResult = this._emergencyJSONRecovery(cleaned);
+    if (emergencyResult) {
+      return this._normalizeConfidence(emergencyResult);
     }
 
-    // If all else fails and retries available, signal for retry
+    // Step 6: If all else fails and retries available, signal for retry
     if (retries < 2 && retryCallback) {
       console.log('[PostProcessor] All extraction methods failed, attempting corrective re-prompt...');
       return null; // Signal for retry
     }
 
-    // Final error - log the original output for debugging
-    console.error('[PostProcessor] All JSON extraction methods failed');
-    console.error('[PostProcessor] Output preview (first 1000 chars):', cleaned.substring(0, 1000));
+    // Final error with detailed diagnostics
+    console.error('[PostProcessor] ======== ALL JSON EXTRACTION METHODS FAILED ========');
     console.error('[PostProcessor] Output length:', cleaned.length);
-    throw new Error(`Failed to parse JSON after ${retries} retries. Output may contain invalid JSON or be in an unexpected format.`);
+    console.error('[PostProcessor] First 500 chars:', cleaned.substring(0, 500));
+    console.error('[PostProcessor] Last 500 chars:', cleaned.substring(Math.max(0, cleaned.length - 500)));
+    console.error('[PostProcessor] ====================================================');
+    
+    throw new Error(`Failed to parse JSON after ${retries + 1} attempts. Model output is not valid JSON.`);
   }
 
   /**
