@@ -1,6 +1,5 @@
 /**
  * Document Processor - Handles file extraction, chunking, and map-reduce summarization
- * Per markdown.md section 5: Document processing pipeline
  */
 
 import { chunkText } from '../utils/helpers.js';
@@ -13,12 +12,12 @@ class DocumentProcessor {
     let text = rawText;
 
     // Remove common headers/footers
-    text = text.replace(/^Page \d+.*$/gm, ''); // Page numbers
-    text = text.replace(/^.*?©.*?$/gm, ''); // Copyright
+    text = text.replace(/^Page \d+.*$/gm, '');
+    text = text.replace(/^.*?©.*?$/gm, '');
     
     // Normalize whitespace
-    text = text.replace(/\n\n\n+/g, '\n\n'); // Multiple newlines
-    text = text.replace(/[ \t]+/g, ' '); // Multiple spaces/tabs
+    text = text.replace(/\n\n\n+/g, '\n\n');
+    text = text.replace(/[ \t]+/g, ' ');
     text = text.trim();
 
     return text;
@@ -26,7 +25,6 @@ class DocumentProcessor {
 
   /**
    * Split text into chunks for map-reduce processing
-   * Returns array of chunks with metadata
    */
   chunkDocument(text, maxTokens = 2000, overlapTokens = 100) {
     const chunks = chunkText(text, maxTokens, overlapTokens);
@@ -111,7 +109,7 @@ class DocumentProcessor {
 
   _deduplicateAndLimit(items, limit) {
     const unique = [...new Set(items.map(item => 
-      typeof item === 'string' ? item : JSON.stringify(item)
+      typeof item === 'string' ? item.trim() : JSON.stringify(item)
     ))];
     
     return unique
@@ -122,7 +120,8 @@ class DocumentProcessor {
         } catch {
           return item;
         }
-      });
+      })
+      .filter(item => item && item.toString().trim().length > 0);
   }
 
   /**
@@ -139,21 +138,70 @@ ${chunk}`;
    * Create a reduce prompt for final summarization
    */
   createReducePrompt(chunkResults, generateRoadmap = false) {
-    const resultsStr = chunkResults.map((r, i) => 
-      `Chunk ${i}: ${typeof r === 'string' ? r : JSON.stringify(r)}`
-    ).join('\n\n');
+    const combinedText = this._createCombinedText(chunkResults);
+    
+    let prompt = `Based on the following combined document summaries, create a comprehensive final summary:
 
-    let prompt = `Combine the following chunk summaries into a final document summary. Deduplicate action items and create global keywords.
-Input summaries:
-${resultsStr}
+${combinedText}
 
-Return JSON with keys: summary_short, highlights, action_items, keywords`;
+Return ONLY valid JSON with these exact keys:
+- summary_short: string (executive summary, 150-250 words)
+- highlights: array of strings (5-10 key highlights)
+- action_items: array of strings (5-7 actionable items)
+- keywords: array of strings (10-15 key terms)`;
 
     if (generateRoadmap) {
-      prompt += `, generated_roadmap`;
+      prompt += `\n- roadmap: optional learning roadmap based on document content`;
     }
 
     return prompt;
+  }
+
+  _createCombinedText(chunkResults) {
+    const summaries = [];
+    const actionItems = [];
+    const keywords = [];
+    
+    chunkResults.forEach((result, index) => {
+      const parsed = this.parseChunkResult(result);
+      
+      if (parsed.chunk_summary && parsed.chunk_summary.trim()) {
+        summaries.push(`Chunk ${index + 1} Summary: ${parsed.chunk_summary.trim()}`);
+      }
+      
+      if (parsed.chunk_action_items && Array.isArray(parsed.chunk_action_items)) {
+        parsed.chunk_action_items.forEach(item => {
+          if (item && item.trim()) {
+            actionItems.push(item.trim());
+          }
+        });
+      }
+      
+      if (parsed.chunk_keywords && Array.isArray(parsed.chunk_keywords)) {
+        parsed.chunk_keywords.forEach(keyword => {
+          if (keyword && keyword.trim()) {
+            keywords.push(keyword.trim());
+          }
+        });
+      }
+    });
+    
+    let combined = '';
+    if (summaries.length > 0) {
+      combined += '## Document Summaries\n\n' + summaries.join('\n\n') + '\n\n';
+    }
+    
+    if (actionItems.length > 0) {
+      const uniqueActions = [...new Set(actionItems)];
+      combined += '## Action Items\n\n' + uniqueActions.map(item => `- ${item}`).join('\n') + '\n\n';
+    }
+    
+    if (keywords.length > 0) {
+      const uniqueKeywords = [...new Set(keywords)];
+      combined += '## Keywords\n\n' + uniqueKeywords.join(', ');
+    }
+    
+    return combined || 'No content extracted from document chunks.';
   }
 }
 
