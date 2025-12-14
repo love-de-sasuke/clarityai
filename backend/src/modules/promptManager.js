@@ -3,25 +3,35 @@
  * Per markdown.md section 4: Prompt templates
  */
 
-const SYSTEM_PROMPT = `You are an expert assistant. You MUST return ONLY valid JSON. 
-CRITICAL RULES:
-1. NEVER use markdown code blocks (no \`\`\`)
-2. NEVER add text before or after JSON
-3. ALWAYS start with { and end with }
-4. ALWAYS close all arrays and objects properly
-5. NEVER truncate or cut off arrays
-6. ALWAYS ensure proper commas between array elements
-7. If response is too long, shorten content but NEVER break JSON structure
-8. Use this EXACT format with NO deviations
+const SYSTEM_PROMPT = `You are ClarityAI, an expert assistant. You MUST return ONLY valid JSON.
 
-Return ONLY a single, valid JSON object. Example format: {"key": "value", "array": ["item1", "item2"]}`;
+CRITICAL RULES:
+1. Output MUST be a single, valid JSON object starting with { and ending with }
+2. NEVER use markdown code blocks (no \`\`\`json or \`\`\`)
+3. NEVER add any text before or after the JSON
+4. For "confidence" field, ALWAYS use a NUMBER between 0.0 and 1.0 (NEVER words like "high", "medium", "low")
+5. ALWAYS close all JSON structures properly - no truncated arrays or objects
+6. If response would exceed token limit, shorten content but NEVER truncate JSON structure
+7. Escape all quotes inside strings properly (use \\" for quotes within strings)
+8. Use commas correctly between array elements and object properties
+9. Ensure all strings have proper opening and closing quotes
+
+EXAMPLE CORRECT OUTPUT:
+{"summary": "This is a summary", "confidence": 0.8}
+
+EXAMPLE WRONG OUTPUT (DON'T DO THIS):
+\`\`\`json
+{"summary": "This is a summary", "confidence": "high"}
+\`\`\`
+
+FAILURE TO FOLLOW THESE RULES WILL RESULT IN APPLICATION ERRORS.`;
 
 class PromptManager {
   generatePrompt(featureType, userParams, contextText = '') {
     let userPrompt = '';
     let metadata = {
       maxTokens: 2000,
-      stopSequences: ['```', 'Response:', 'Output:', 'Here is'],
+      stopSequences: ['\n}\n', '\n}', '}\n', '}', '```'],
       feature: featureType
     };
 
@@ -59,125 +69,144 @@ class PromptManager {
 
   _generateExplainPrompt(params) {
     const { topic, detailLevel = 'short' } = params;
-    return `Explain "${topic}" for student and professional audiences at ${detailLevel} detail level.
+    return `Explain the topic below for both student and professional audiences.
 
-IMPORTANT: Return ONLY valid JSON with EXACTLY these keys: summary, examples, bullets, keywords, quiz
+TOPIC: ${topic}
+DETAIL LEVEL: ${detailLevel}
 
-REQUIRED FORMAT:
-{
-  "summary": "string (40-200 chars)",
-  "examples": ["example1", "example2", "example3"],
-  "bullets": ["bullet1", "bullet2", "bullet3", "bullet4"],
-  "keywords": ["keyword1", "keyword2", "keyword3", "keyword4", "keyword5"],
-  "quiz": [
-    {"q": "question1", "options": ["a", "b", "c", "d"], "answer": 0},
-    {"q": "question2", "options": ["a", "b", "c", "d"], "answer": 1},
-    {"q": "question3", "options": ["a", "b", "c", "d"], "answer": 2},
-    {"q": "question4", "options": ["a", "b", "c", "d"], "answer": 3},
-    {"q": "question5", "options": ["a", "b", "c", "d"], "answer": 0}
-  ]
-}
+RETURN ONLY VALID JSON with these exact fields:
+- summary: string (at least 100 characters)
+- examples: array of EXACTLY 3 strings
+- bullets: array of strings (5-10 bullet points)
+- keywords: array of strings (5-10 relevant keywords)
+- quiz: array of EXACTLY 5 objects, each with: "q" (question), "options" (array of 4 strings), "answer" (number 0-3)
 
-CRITICAL: NO markdown, NO backticks, NO extra text. Start with {, end with }. Ensure ALL commas between array elements.`;
+QUIZ FORMAT EXAMPLE:
+[{"q":"What is 2+2?","options":["3","4","5","6"],"answer":1}]
+
+IMPORTANT:
+- Do NOT use markdown or code blocks
+- Do NOT wrap JSON in backticks
+- Start with { and end with }
+- If too long, shorten content but keep JSON structure complete
+- Ensure all arrays are properly closed with ] and objects with }`;
   }
 
   _generateRoadmapPrompt(params) {
     const { goal, timeframeWeeks = 8, level = 'intermediate' } = params;
-    return `Create a ${timeframeWeeks}-week learning roadmap for "${goal}" at ${level} level.
+    return `Create a ${timeframeWeeks}-week learning roadmap for this goal: "${goal}"
+EXPERIENCE LEVEL: ${level}
 
-IMPORTANT: Return ONLY valid JSON with EXACTLY these keys: weeks, resources, confidence
+RETURN ONLY VALID JSON with these exact fields:
+- weeks: array of objects, each with:
+  * week_number: number (1-${timeframeWeeks})
+  * tasks: array of 3-5 strings (specific, actionable tasks)
+  * estimated_hours: number (total hours for the week)
+  * milestone: string (what will be achieved by week's end)
+- resources: array of objects, each with:
+  * title: string (resource title)
+  * url: string (valid URL starting with http:// or https://)
+- confidence: NUMBER between 0.0 and 1.0 (NEVER use words like "high", "medium", "low")
 
-REQUIRED FORMAT:
-{
-  "weeks": [
-    {
-      "week_number": 1,
-      "tasks": ["task1", "task2", "task3"],
-      "estimated_hours": 10,
-      "milestone": "string describing milestone"
-    },
-    {
-      "week_number": 2,
-      "tasks": ["task1", "task2", "task3"],
-      "estimated_hours": 12,
-      "milestone": "string describing milestone"
-    }
-  ],
-  "resources": [
-    {"title": "Resource 1", "url": "https://valid-url.com"},
-    {"title": "Resource 2", "url": "https://another-url.com"}
-  ],
-  "confidence": 0.85
-}
+EXAMPLE WEEK FORMAT:
+{"week_number":1,"tasks":["Learn basics","Practice examples"],"estimated_hours":10,"milestone":"Understand fundamentals"}
 
-CRITICAL RULES:
-1. weeks array MUST have ${timeframeWeeks} items (one per week)
-2. Each week MUST have week_number, tasks (array), estimated_hours (number), milestone (string)
-3. tasks array items MUST be strings separated by commas
-4. NO markdown, NO backticks, NO extra text
-5. Start with {, end with }
-6. Ensure proper commas: ["item1", "item2"] NOT ["item1" "item2"]`;
+IMPORTANT:
+- Return ONLY JSON, no other text
+- Ensure all URLs are valid and properly quoted
+- If ${timeframeWeeks} weeks is too long, still return complete JSON with all weeks
+- Do NOT truncate or cut off any arrays/objects
+- Confidence MUST be a number (e.g., 0.8 not "high")`;
   }
 
   _generateRewritePrompt(params) {
     const { text, tone = 'formal' } = params;
-    return `Rewrite the following text in ${tone} tone. Provide 3 variations.
+    return `Rewrite the following text in a ${tone} tone:
 
-Original text: "${text}"
+ORIGINAL TEXT:
+${text}
 
-IMPORTANT: Return ONLY valid JSON with EXACTLY these keys: rewrites, subject_suggestions, caption, changes_summary, confidence
+RETURN ONLY VALID JSON with these exact fields:
+- rewrites: array of EXACTLY 3 objects, each with:
+  * tone: string (e.g., "formal", "casual", "persuasive")
+  * text: string (the rewritten text)
+- subject_suggestions: array of 3-5 strings (alternative subject lines/titles)
+- caption: string (10-12 word summary caption)
+- changes_summary: string (brief summary of changes made)
+- confidence: NUMBER between 0.0 and 1.0 (e.g., 0.7, 0.9, NEVER "high" or "medium")
 
-REQUIRED FORMAT:
-{
-  "rewrites": [
-    {"tone": "formal", "text": "rewritten text 1"},
-    {"tone": "professional", "text": "rewritten text 2"},
-    {"tone": "concise", "text": "rewritten text 3"}
-  ],
-  "subject_suggestions": ["suggestion1", "suggestion2", "suggestion3"],
-  "caption": "10-12 word descriptive caption",
-  "changes_summary": "brief summary of changes made",
-  "confidence": 0.9
-}
-
-CRITICAL: NO markdown, NO backticks, NO extra text. Start with {, end with }. Ensure ALL commas between array elements.`;
+IMPORTANT:
+- Return ONLY plain JSON, no markdown
+- All 3 rewrites must be in different tones (e.g., formal, casual, persuasive)
+- Ensure each rewrite is complete and coherent
+- Do NOT cut off any text mid-sentence
+- Confidence MUST be a decimal number, not a word
+- Start with { and end with }`;
   }
 
   _generateDocumentPrompt(params, textChunk) {
     const { isChunk = false } = params;
     
     if (isChunk) {
-      return `Summarize this text chunk (MAX 2000 tokens).
+      return `Summarize the following document chunk (approx ${textChunk.length} characters):
 
-Chunk: ${textChunk}
+CHUNK CONTENT:
+${textChunk}
 
-Return ONLY valid JSON with EXACTLY these keys: chunk_summary, chunk_action_items, chunk_keywords
+RETURN ONLY VALID JSON with these exact fields:
+- chunk_summary: string (100-200 word summary)
+- chunk_action_items: array of strings (3-5 actionable items)
+- chunk_keywords: array of strings (5-10 key terms)
 
-FORMAT:
-{
-  "chunk_summary": "summary text",
-  "chunk_action_items": ["item1", "item2"],
-  "chunk_keywords": ["keyword1", "keyword2", "keyword3"]
-}
-
-CRITICAL: NO markdown, NO backticks. Start with {, end with }.`;
+IMPORTANT:
+- Return only JSON, no other text
+- Start with { and end with }
+- Ensure all arrays are properly closed`;
     } else {
-      return `Summarize this document comprehensively.
+      return `Provide a comprehensive summary of this document (approx ${textChunk.length} characters):
 
-Document: ${textChunk}
+DOCUMENT CONTENT:
+${textChunk}
 
-Return ONLY valid JSON with EXACTLY these keys: summary_short, highlights, action_items, keywords
+RETURN ONLY VALID JSON with these exact fields:
+- summary_short: string (150-250 word executive summary)
+- highlights: array of strings (5-10 key highlights)
+- action_items: array of strings (5-7 actionable items)
+- keywords: array of strings (10-15 key terms)
 
-FORMAT:
-{
-  "summary_short": "short summary (40-100 chars)",
-  "highlights": ["highlight1", "highlight2", "highlight3"],
-  "action_items": ["action1", "action2", "action3"],
-  "keywords": ["keyword1", "keyword2", "keyword3", "keyword4"]
-}
-
-CRITICAL: NO markdown, NO backticks. Start with {, end with }.`;
+IMPORTANT:
+- Return only JSON, no markdown or code blocks
+- Do NOT wrap in backticks
+- Start with { and end with }
+- If document is long, focus on key points but keep JSON complete`;
     }
+  }
+
+  /**
+   * Generate a corrective prompt for when JSON parsing fails
+   */
+  generateCorrectivePrompt(featureType, originalOutput, error) {
+    const correctivePrompts = {
+      explain: `Your previous response had invalid JSON. The error was: "${error}"
+                Please re-answer with ONLY valid JSON, no markdown, no code blocks.`,
+      roadmap: `Your previous roadmap response had JSON errors: "${error}"
+                Please re-generate the roadmap with ONLY valid JSON. Remember: confidence must be a NUMBER (0.0-1.0), not a word.`,
+      rewrite: `Your rewrite response had invalid JSON: "${error}"
+                Please provide ONLY valid JSON. Confidence must be a NUMBER (e.g., 0.8), not "high" or "medium".`,
+      document: `Your document summary had JSON errors: "${error}"
+                 Please provide ONLY valid JSON output, no markdown formatting.`
+    };
+
+    return {
+      systemPrompt: `CRITICAL: Your previous response had invalid JSON. This time, return ONLY valid JSON. No markdown, no code blocks, no extra text. Start with { and end with }.`,
+      userPrompt: correctivePrompts[featureType] || `Please fix your JSON output. Error: ${error}`,
+      metadata: {
+        maxTokens: 1500,
+        stopSequences: ['\n}\n', '\n}', '}\n', '}'],
+        feature: featureType,
+        isCorrective: true
+      }
+    };
   }
 }
 
