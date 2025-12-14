@@ -263,10 +263,11 @@ router.post('/rewrite', optionalAuth, async (req, res) => {
     res.status(500).json({
       status: 'error',
       requestId,
-      error: error.message
+      error: errormessage
     });
   }
 });
 
 export default router;
+
 
