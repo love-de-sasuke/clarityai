@@ -7,7 +7,7 @@ import promptManager from '../modules/promptManager.js';
 import modelAdapter from '../modules/modelAdapter.js';
 import postProcessor from '../modules/postProcessor.js';
 import Request from '../models/Request.js';
-import { authenticate, optionalAuth } from '../middleware/auth.js';
+import { optionalAuth } from '../middleware/auth.js';
 import { generateRequestId } from '../utils/helpers.js';
 import logger from '../utils/logger.js';
 
@@ -35,7 +35,8 @@ router.post('/explain', optionalAuth, async (req, res) => {
     const modelResponse = await modelAdapter.callModel(
       systemPrompt,
       userPrompt,
-      metadata.maxTokens
+      metadata.maxTokens,
+      metadata.stopSequences
     );
 
     if (!modelResponse.success) {
@@ -66,12 +67,11 @@ router.post('/explain', optionalAuth, async (req, res) => {
       input: { topic, detailLevel },
       result,
       metrics: {
-        promptTokens: modelResponse.tokens.prompt,
-        completionTokens: modelResponse.tokens.completion,
-        totalTokens: modelResponse.tokens.total,
+        promptTokens: modelResponse.tokens.prompt || 0,
+        completionTokens: modelResponse.tokens.completion || 0,
+        totalTokens: modelResponse.tokens.total || 0,
         duration_ms: Date.now() - startTime,
-        modelProvider: 'openai',
-        modelVersion: modelAdapter.modelName,
+        modelProvider: modelAdapter.getProviderName() || 'unknown',
         confidence: result.confidence || 0.8
       }
     });
@@ -86,11 +86,10 @@ router.post('/explain', optionalAuth, async (req, res) => {
       startTime,
       endTime: Date.now(),
       status: 'success',
-      modelProvider: 'openai',
-      modelVersion: modelAdapter.modelName,
-      promptTokens: modelResponse.tokens.prompt,
-      completionTokens: modelResponse.tokens.completion,
-      totalTokens: modelResponse.tokens.total,
+      modelProvider: modelAdapter.getProviderName() || 'unknown',
+      promptTokens: modelResponse.tokens.prompt || 0,
+      completionTokens: modelResponse.tokens.completion || 0,
+      totalTokens: modelResponse.tokens.total || 0,
       confidence: result.confidence || 0.8
     });
 
@@ -102,7 +101,7 @@ router.post('/explain', optionalAuth, async (req, res) => {
   } catch (error) {
     logger.error('Explain endpoint error', error, { requestId, topic: req.body.topic });
     
-    // Try to save failed request (but don't fail if DB save fails)
+    // Try to save failed request
     try {
       const requestDoc = new Request({
         requestId,
@@ -120,22 +119,23 @@ router.post('/explain', optionalAuth, async (req, res) => {
       console.error('[ERROR] Failed to save request to DB:', dbError.message);
     }
 
-    // Return detailed error message (we want to see what's wrong)
     let errorMessage = error.message;
     
     // Provide helpful messages for common errors
-    if (error.message.includes('OPENAI_API_KEY')) {
-      errorMessage = 'OpenAI API key is not configured. Please check your environment variables.';
+    if (error.message.includes('OPENAI_API_KEY') || error.message.includes('GEMINI_API_KEY')) {
+      errorMessage = 'API key is not configured. Please check your environment variables.';
     } else if (error.message.includes('not found') || error.message.includes('Model')) {
-      errorMessage = `Model error: ${error.message}. Try setting AI_MODEL_NAME=gpt-3.5-turbo`;
-    } else if (error.message.includes('Invalid OpenAI API key')) {
-      errorMessage = 'Invalid OpenAI API key. Please verify your API key is correct.';
+      errorMessage = `Model error: ${error.message}. Check your AI_MODEL_NAME environment variable.`;
+    } else if (error.message.includes('Invalid API key')) {
+      errorMessage = 'Invalid API key. Please verify your API key is correct.';
     } else if (error.message.includes('rate limit')) {
-      errorMessage = 'OpenAI API rate limit exceeded. Please try again in a moment.';
+      errorMessage = 'API rate limit exceeded. Please try again in a moment.';
+    } else if (error.message.includes('timeout')) {
+      errorMessage = 'Request timeout. Please try again.';
     }
     
-    // In production, still show the error but make it user-friendly
-    if (process.env.NODE_ENV === 'production' && !errorMessage.includes('OpenAI') && !errorMessage.includes('Model')) {
+    // In production, generic error message
+    if (process.env.NODE_ENV === 'production') {
       errorMessage = 'An error occurred while processing your request. Please try again.';
     }
 
@@ -169,7 +169,8 @@ router.post('/rewrite', optionalAuth, async (req, res) => {
     const modelResponse = await modelAdapter.callModel(
       systemPrompt,
       userPrompt,
-      metadata.maxTokens
+      metadata.maxTokens,
+      metadata.stopSequences
     );
 
     if (!modelResponse.success) {
@@ -199,12 +200,11 @@ router.post('/rewrite', optionalAuth, async (req, res) => {
       input: { text, tone },
       result,
       metrics: {
-        promptTokens: modelResponse.tokens.prompt,
-        completionTokens: modelResponse.tokens.completion,
-        totalTokens: modelResponse.tokens.total,
+        promptTokens: modelResponse.tokens.prompt || 0,
+        completionTokens: modelResponse.tokens.completion || 0,
+        totalTokens: modelResponse.tokens.total || 0,
         duration_ms: Date.now() - startTime,
-        modelProvider: 'openai',
-        modelVersion: modelAdapter.modelName,
+        modelProvider: modelAdapter.getProviderName() || 'unknown',
         confidence: result.confidence || 0.85
       }
     });
@@ -218,11 +218,10 @@ router.post('/rewrite', optionalAuth, async (req, res) => {
       startTime,
       endTime: Date.now(),
       status: 'success',
-      modelProvider: 'openai',
-      modelVersion: modelAdapter.modelName,
-      promptTokens: modelResponse.tokens.prompt,
-      completionTokens: modelResponse.tokens.completion,
-      totalTokens: modelResponse.tokens.total,
+      modelProvider: modelAdapter.getProviderName() || 'unknown',
+      promptTokens: modelResponse.tokens.prompt || 0,
+      completionTokens: modelResponse.tokens.completion || 0,
+      totalTokens: modelResponse.tokens.total || 0,
       confidence: result.confidence || 0.85
     });
 
