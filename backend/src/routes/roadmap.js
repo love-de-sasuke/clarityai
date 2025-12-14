@@ -30,96 +30,34 @@ router.post('/roadmap', optionalAuth, async (req, res) => {
       { goal, timeframeWeeks, level }
     );
 
-    // Call model with retry logic
-    let modelResponse;
-    let result;
-    let retryCount = 0;
-    const maxRetries = 2;
+    // Call model
+    const modelResponse = await modelAdapter.callModel(
+      systemPrompt,
+      userPrompt,
+      metadata.maxTokens
+    );
 
-    while (retryCount <= maxRetries) {
-      try {
-        console.log(`[Roadmap] Attempt ${retryCount + 1}/${maxRetries + 1}`);
-        
-        modelResponse = await modelAdapter.callModel(
-          systemPrompt,
-          userPrompt,
-          metadata.maxTokens
-        );
-
-        if (!modelResponse.success) {
-          throw new Error(modelResponse.error);
-        }
-
-        console.log(`[Roadmap] Model response received, length: ${modelResponse.content.length}`);
-        
-        // Parse JSON with retry count
-        try {
-          result = postProcessor.parseJSON(modelResponse.content, retryCount);
-          console.log('[Roadmap] JSON parse successful');
-          break; // Success!
-        } catch (parseError) {
-          console.log(`[Roadmap] JSON parse failed on attempt ${retryCount + 1}:`, parseError.message);
-          
-          if (parseError.message === 'PARSE_RETRY_NEEDED' && retryCount < maxRetries) {
-            retryCount++;
-            // Wait before retry
-            await new Promise(resolve => setTimeout(resolve, 1000 * retryCount));
-            continue;
-          } else {
-            throw parseError;
-          }
-        }
-      } catch (error) {
-        if (retryCount < maxRetries) {
-          retryCount++;
-          console.log(`[Roadmap] Retrying (${retryCount}/${maxRetries})...`);
-          await new Promise(resolve => setTimeout(resolve, 1000 * retryCount));
-          continue;
-        } else {
-          throw error;
-        }
-      }
+    if (!modelResponse.success) {
+      throw new Error(modelResponse.error);
     }
 
-    // If still no result after retries
+    // Parse and validate
+    let result = postProcessor.parseJSON(modelResponse.content);
     if (!result) {
-      throw new Error('Failed to get valid response after retries');
+      throw new Error('Failed to parse model response');
     }
 
-    // Validate schema
     const validation = postProcessor.validateSchema(result, 'roadmap');
     if (!validation.valid) {
-      console.warn('[Roadmap] Validation warnings:', validation.errors);
+      console.warn('Validation errors:', validation.errors);
       result = validation.data;
     }
 
-    // Sanitize
     result = postProcessor.sanitize(result);
 
     // Normalize confidence
     if (result.confidence && typeof result.confidence !== 'number') {
       result.confidence = parseConfidence(result.confidence);
-    }
-
-    // Ensure required structure
-    if (!result.weeks || !Array.isArray(result.weeks)) {
-      result.weeks = Array.from({ length: timeframeWeeks }, (_, i) => ({
-        week_number: i + 1,
-        tasks: [`Study ${goal} concepts`, `Practice exercises`, `Review materials`],
-        estimated_hours: 10,
-        milestone: `Week ${i + 1} milestone`
-      }));
-    }
-
-    if (!result.resources || !Array.isArray(result.resources)) {
-      result.resources = [
-        { title: `${goal} Official Documentation`, url: 'https://example.com/docs' },
-        { title: `${goal} Learning Platform`, url: 'https://example.com/learn' }
-      ];
-    }
-
-    if (!result.confidence) {
-      result.confidence = 0.8;
     }
 
     // Save request
@@ -131,14 +69,13 @@ router.post('/roadmap', optionalAuth, async (req, res) => {
       input: { goal, timeframeWeeks, level },
       result,
       metrics: {
-        promptTokens: modelResponse?.tokens?.prompt || 0,
-        completionTokens: modelResponse?.tokens?.completion || 0,
-        totalTokens: modelResponse?.tokens?.total || 0,
+        promptTokens: modelResponse.tokens.prompt,
+        completionTokens: modelResponse.tokens.completion,
+        totalTokens: modelResponse.tokens.total,
         duration_ms: Date.now() - startTime,
         modelProvider: 'openai',
         modelVersion: modelAdapter.modelName,
-        confidence: result.confidence || 0.7,
-        retries: retryCount
+        confidence: result.confidence || 0.7
       }
     });
 
@@ -153,60 +90,35 @@ router.post('/roadmap', optionalAuth, async (req, res) => {
       status: 'success',
       modelProvider: 'openai',
       modelVersion: modelAdapter.modelName,
-      promptTokens: modelResponse?.tokens?.prompt || 0,
-      completionTokens: modelResponse?.tokens?.completion || 0,
-      totalTokens: modelResponse?.tokens?.total || 0,
-      confidence: result.confidence || 0.7,
-      retries: retryCount
+      promptTokens: modelResponse.tokens.prompt,
+      completionTokens: modelResponse.tokens.completion,
+      totalTokens: modelResponse.tokens.total,
+      confidence: result.confidence || 0.7
     });
 
     res.json({
       status: 'ok',
       requestId,
-      result,
-      metrics: {
-        retries: retryCount,
-        duration_ms: Date.now() - startTime
-      }
+      result
     });
   } catch (error) {
     logger.error('Roadmap endpoint error', error, { requestId, goal: req.body.goal });
-
-    // Create fallback response
-    const fallbackResult = {
-      fallback: true,
-      weeks: Array.from({ length: timeframeWeeks || 8 }, (_, i) => ({
-        week_number: i + 1,
-        tasks: ['Study core concepts', 'Complete practice exercises', 'Review progress'],
-        estimated_hours: 12,
-        milestone: `Complete Week ${i + 1} learning objectives`
-      })),
-      resources: [
-        { title: 'Official Documentation', url: 'https://example.com/docs' },
-        { title: 'Learning Resources', url: 'https://example.com/learn' }
-      ],
-      confidence: 0.7,
-      error_message: error.message
-    };
 
     const requestDoc = new Request({
       requestId,
       userId: req.userId || null,
       featureType: 'roadmap',
-      status: 'complete',
+      status: 'failed',
       input: req.body,
-      result: fallbackResult,
       errorMessage: error.message,
       metrics: { duration_ms: Date.now() - startTime }
     });
-    
     await requestDoc.save();
 
-    res.json({
-      status: 'ok',
+    res.status(500).json({
+      status: 'error',
       requestId,
-      result: fallbackResult,
-      warning: 'Using fallback response due to error: ' + error.message
+      error: error.message
     });
   }
 });
