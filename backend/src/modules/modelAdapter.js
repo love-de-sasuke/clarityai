@@ -1,5 +1,7 @@
 /**
  * Model Adapter - Handles API calls to AI models with retries and error handling
+ * Per markdown.md section 8: Error handling, retries, and fallback logic
+ * Supports: Gemini, DeepSeek, OpenAI, Claude
  */
 
 import axios from 'axios';
@@ -10,7 +12,7 @@ class ModelAdapter {
     this.apiKey = this._getApiKey();
     this.modelName = process.env.AI_MODEL_NAME || 'gemini-pro';
     this.maxRetries = 3;
-    this.retryDelay = 1000;
+    this.retryDelay = 1000; // ms
   }
 
   _getApiKey() {
@@ -43,29 +45,22 @@ class ModelAdapter {
     }
   }
 
-  /**
-   * Get provider name for logging
-   */
-  getProviderName() {
-    return this.provider;
-  }
-
-  async callModel(systemPrompt, userPrompt, maxTokens = 2000, stopSequences = [], metadata = {}) {
+  async callModel(systemPrompt, userPrompt, maxTokens = 2000) {
     let lastError;
     
     for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
       try {
         console.log(`[ModelAdapter] Attempt ${attempt}/${this.maxRetries} for model call (${this.provider})`);
         
-        const response = await this._callModelAPI(systemPrompt, userPrompt, maxTokens, stopSequences);
+        const response = await this._callModelAPI(systemPrompt, userPrompt, maxTokens);
         
         return {
           success: true,
           content: response.content,
           tokens: {
-            prompt: response.promptTokens || 0,
-            completion: response.completionTokens || 0,
-            total: response.totalTokens || 0
+            prompt: response.promptTokens,
+            completion: response.completionTokens,
+            total: response.totalTokens
           },
           model: this.modelName
         };
@@ -73,37 +68,42 @@ class ModelAdapter {
         lastError = error;
         console.error(`[ModelAdapter] Attempt ${attempt} failed:`, error.message);
         
+        // Check if error is retryable
         if (!this._isRetryable(error) || attempt === this.maxRetries) {
           break;
         }
         
+        // Calculate delay based on error type
         const delay = this._getRetryDelay(attempt, error);
-        console.log(`[ModelAdapter] Retrying in ${delay/1000}s...`);
+        console.log(`[ModelAdapter] Retrying in ${delay/1000}s (attempt ${attempt + 1}/${this.maxRetries})...`);
         await new Promise(resolve => setTimeout(resolve, delay));
       }
     }
 
     return {
       success: false,
-      error: lastError ? lastError.message : 'Unknown error',
-      errorCode: lastError ? lastError.code : null
+      error: lastError.message,
+      errorCode: lastError.code
     };
   }
 
-  async _callModelAPI(systemPrompt, userPrompt, maxTokens, stopSequences) {
+  async _callModelAPI(systemPrompt, userPrompt, maxTokens) {
     if (!this.apiKey) {
       const keyName = this._getApiKeyName();
       throw new Error(`${keyName} is not set. Please configure it in your environment variables.`);
     }
 
+    // Gemini uses different API format
     if (this.provider.toLowerCase() === 'gemini') {
-      return await this._callGemini(systemPrompt, userPrompt, maxTokens, stopSequences);
+      return await this._callGemini(systemPrompt, userPrompt, maxTokens);
     }
 
+    // DeepSeek and OpenAI use the same API format
     if (this.provider.toLowerCase() === 'deepseek' || this.provider.toLowerCase() === 'openai') {
-      return await this._callDeepSeekOrOpenAI(systemPrompt, userPrompt, maxTokens, stopSequences);
+      return await this._callDeepSeekOrOpenAI(systemPrompt, userPrompt, maxTokens);
     }
     
+    // Claude uses different format (to be implemented if needed)
     throw new Error(`Provider '${this.provider}' is not yet fully supported.`);
   }
 
@@ -122,7 +122,8 @@ class ModelAdapter {
     }
   }
 
-  async _callGemini(systemPrompt, userPrompt, maxTokens, stopSequences) {
+  async _callGemini(systemPrompt, userPrompt, maxTokens) {
+    // Combine system and user prompts for Gemini
     const fullPrompt = `${systemPrompt}\n\n${userPrompt}`;
 
     const endpoint = this._getApiEndpoint();
@@ -139,34 +140,30 @@ class ModelAdapter {
           generationConfig: {
             maxOutputTokens: maxTokens,
             temperature: 0.7,
-            topP: 0.9,
-            stopSequences: stopSequences.length > 0 ? stopSequences : undefined
+            topP: 0.9
           }
         },
         {
           headers: {
             'Content-Type': 'application/json'
-          },
-          timeout: 60000
+          }
         }
       );
 
       // Extract text from Gemini response
-      const text = response.data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+      const text = response.data.candidates[0].content.parts[0].text;
       
-      if (!text) {
-        throw new Error('Empty response from Gemini API');
-      }
-      
+      // Gemini provides token counts in usageMetadata
       const usageMetadata = response.data.usageMetadata || {};
       
       return {
         content: text,
-        promptTokens: usageMetadata.promptTokenCount || Math.ceil(fullPrompt.length / 4),
-        completionTokens: usageMetadata.candidatesTokenCount || Math.ceil(text.length / 4),
-        totalTokens: usageMetadata.totalTokenCount || Math.ceil((fullPrompt.length + text.length) / 4)
+        promptTokens: usageMetadata.promptTokenCount || 0,
+        completionTokens: usageMetadata.candidatesTokenCount || 0,
+        totalTokens: usageMetadata.totalTokenCount || 0
       };
     } catch (error) {
+      // Provide more detailed error messages
       if (error.response) {
         const status = error.response.status;
         const errorData = error.response.data;
@@ -185,19 +182,17 @@ class ModelAdapter {
           throw new Error('Gemini API service is temporarily unavailable. Please try again later.');
         }
         
+        // Return Gemini's error message if available
         const errorMessage = errorData?.error?.message || `Gemini API error: ${status}`;
         throw new Error(errorMessage);
       }
       
-      if (error.code === 'ECONNABORTED') {
-        throw new Error('Gemini API request timeout. Please try again.');
-      }
-      
+      // Network or other errors
       throw error;
     }
   }
 
-  async _callDeepSeekOrOpenAI(systemPrompt, userPrompt, maxTokens, stopSequences) {
+  async _callDeepSeekOrOpenAI(systemPrompt, userPrompt, maxTokens) {
     const messages = [
       { role: 'system', content: systemPrompt },
       { role: 'user', content: userPrompt }
@@ -214,31 +209,24 @@ class ModelAdapter {
           messages,
           max_tokens: maxTokens,
           temperature: 0.7,
-          top_p: 0.9,
-          stop: stopSequences.length > 0 ? stopSequences : undefined
+          top_p: 0.9
         },
         {
           headers: {
             'Authorization': `Bearer ${this.apiKey}`,
             'Content-Type': 'application/json'
-          },
-          timeout: 60000
+          }
         }
       );
 
-      const content = response.data.choices?.[0]?.message?.content || '';
-      
-      if (!content) {
-        throw new Error(`Empty response from ${providerName} API`);
-      }
-
       return {
-        content: content,
-        promptTokens: response.data.usage?.prompt_tokens || Math.ceil((systemPrompt.length + userPrompt.length) / 4),
-        completionTokens: response.data.usage?.completion_tokens || Math.ceil(content.length / 4),
-        totalTokens: response.data.usage?.total_tokens || Math.ceil((systemPrompt.length + userPrompt.length + content.length) / 4)
+        content: response.data.choices[0].message.content,
+        promptTokens: response.data.usage.prompt_tokens,
+        completionTokens: response.data.usage.completion_tokens,
+        totalTokens: response.data.usage.total_tokens
       };
     } catch (error) {
+      // Provide more detailed error messages
       if (error.response) {
         const status = error.response.status;
         const errorData = error.response.data;
@@ -248,8 +236,9 @@ class ModelAdapter {
           throw new Error(`Invalid ${providerName} API key. Please check your ${keyName} environment variable.`);
         }
         if (status === 404) {
-          const defaultModel = this.provider === 'deepseek' ? 'deepseek-chat' : 'gpt-3.5-turbo';
-          throw new Error(`Model '${this.modelName}' not found. Try setting AI_MODEL_NAME=${defaultModel}`);
+          const defaultModel = this.provider === 'deepseek' ? 'deepseek-chat' : 
+                              this.provider === 'openai' ? 'gpt-3.5-turbo' : 'gemini-pro';
+          throw new Error(`Model '${this.modelName}' not found. Try setting AI_MODEL_NAME=${defaultModel} in your environment variables.`);
         }
         if (status === 429) {
           throw new Error(`${providerName} API rate limit exceeded. Please try again later.`);
@@ -258,19 +247,18 @@ class ModelAdapter {
           throw new Error(`${providerName} API service is temporarily unavailable. Please try again later.`);
         }
         
+        // Return API's error message if available
         const errorMessage = errorData?.error?.message || errorData?.error?.code || `${providerName} API error: ${status}`;
         throw new Error(errorMessage);
       }
       
-      if (error.code === 'ECONNABORTED') {
-        throw new Error(`${providerName} API request timeout. Please try again.`);
-      }
-      
+      // Network or other errors
       throw error;
     }
   }
 
   _isRetryable(error) {
+    // Retry on network errors and rate limits (429, 5xx)
     if (error.code === 'ECONNREFUSED' || error.code === 'ETIMEDOUT') return true;
     if (error.response?.status === 429) return true;
     if (error.response?.status >= 500) return true;
@@ -278,13 +266,17 @@ class ModelAdapter {
   }
 
   _getRetryDelay(attempt, error) {
+    // For rate limits (429), use longer delays
     if (error.response?.status === 429) {
+      // Check if OpenAI provides retry-after header
       const retryAfter = error.response.headers['retry-after'];
       if (retryAfter) {
-        return parseInt(retryAfter) * 1000;
+        return parseInt(retryAfter) * 1000; // Convert seconds to milliseconds
       }
+      // Exponential backoff for rate limits: 5s, 10s, 20s
       return 5000 * Math.pow(2, attempt - 1);
     }
+    // Regular exponential backoff for other retryable errors
     return this.retryDelay * Math.pow(2, attempt - 1);
   }
 }
