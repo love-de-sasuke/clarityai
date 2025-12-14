@@ -3,7 +3,7 @@
  * Per markdown.md section 4: Prompt templates
  */
 
-const SYSTEM_PROMPT = `You are an expert assistant. Return output in valid JSON only with keys exactly as requested. Do not include extra commentary, markdown code blocks, or any formatting. Return ONLY the raw JSON object, nothing else.`;
+const SYSTEM_PROMPT = `You are an expert assistant. You MUST return ONLY valid JSON. Do NOT use markdown code blocks, do NOT wrap JSON in backticks, do NOT add any text before or after the JSON. Return ONLY the raw JSON object starting with { and ending with }. Ensure all arrays have commas between elements.`;
 
 class PromptManager {
   generatePrompt(featureType, userParams, contextText = '') {
@@ -51,8 +51,12 @@ class PromptManager {
     return `Explain the topic below for a student and professional audience.
 Topic: ${topic}
 Detail level: ${detailLevel}
-Return JSON keys: summary, examples, bullets, keywords, quiz.
-Format quiz as: [{"q":"question","options":["a","b","c","d"],"answer":0}]`;
+
+Return ONLY valid JSON with these exact keys: summary, examples (array of 3 strings), bullets (array of strings), keywords (array of strings), quiz (array of 5 objects).
+
+Quiz format: [{"q":"question","options":["a","b","c","d"],"answer":0}]
+
+IMPORTANT: Return ONLY the JSON object. No markdown, no code blocks, no backticks, no extra text. Start with { and end with }. Ensure all commas are present in arrays.`;
   }
 
   _generateRoadmapPrompt(params) {
