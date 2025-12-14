@@ -301,6 +301,21 @@ class PostProcessor {
       }
     }
 
+    // Step 4.5: Final rescue - if output starts with '{' but missing closing '}', try to close it
+    if (cleaned.startsWith('{')) {
+      const open = (cleaned.match(/{/g) || []).length;
+      const close = (cleaned.match(/}/g) || []).length;
+      if (open > close) {
+        const autoClosed = cleaned + '}'.repeat(open - close);
+        try {
+          console.log('[PostProcessor] FINAL RESCUE: Auto-closing JSON object');
+          return JSON.parse(autoClosed);
+        } catch (e) {
+          console.log('[PostProcessor] FINAL RESCUE parse failed:', e.message); 
+        }
+      }
+    }
+
     // If all else fails and retries available, signal for retry
     if (retries < 2 && retryCallback) {
       console.log('[PostProcessor] All extraction methods failed, attempting corrective re-prompt...');
