@@ -254,4 +254,3 @@ router.post('/rewrite', optionalAuth, async (req, res) => {
 });
 
 export default router;
-
