@@ -105,7 +105,22 @@ class PostProcessor {
       
       let repaired = jsonStr;
 
-      // Step 1: Remove trailing commas (safest fix)
+      // Step 1: Fix unterminated strings (common issue seen in logs)
+      // Count quotes to ensure they're balanced
+      const quoteCount = (repaired.match(/"/g) || []).length;
+      if (quoteCount % 2 !== 0) {
+        // Add missing closing quote at the end
+        if (!repaired.endsWith('"')) {
+          repaired = repaired + '"';
+        }
+        try {
+          return JSON.parse(repaired);
+        } catch (e1) {
+          // Continue with other repairs
+        }
+      }
+
+      // Step 2: Remove trailing commas (safest fix)
       repaired = repaired.replace(/,\s*([}\]])/g, '$1');
       try {
         return JSON.parse(repaired);
@@ -113,13 +128,11 @@ class PostProcessor {
         // Continue
       }
 
-      // Step 2: Fix missing commas in arrays (most common issue with Gemini)
-      // The error "Expected ',' or ']' after array element" means missing comma between elements
+      // Step 3: Fix missing commas in arrays/objects
       let arrayFixed = repaired;
       
       // Fix missing commas - be very specific to avoid breaking valid JSON
-      // Pattern 1: "item1" "item2" in arrays (two quoted strings with space, followed by ] or ,)
-      // Only fix if followed by closing bracket or comma (indicating array context)
+      // Pattern 1: "item1" "item2" in arrays
       arrayFixed = arrayFixed.replace(/"\s+"(?=\s*[,\]])/g, '", "');
       
       // Pattern 2: number "text" or number number (in arrays)
@@ -130,7 +143,6 @@ class PostProcessor {
       arrayFixed = arrayFixed.replace(/([}\]])\s*(")/g, '$1, $2');
       
       // Pattern 4: "value" "key": (in objects - missing comma between properties)
-      // But be careful - only if followed by colon (indicating object property)
       arrayFixed = arrayFixed.replace(/"\s+"([a-zA-Z_][a-zA-Z0-9_]*":)/g, '", "$1');
       
       if (arrayFixed !== repaired) {
@@ -142,74 +154,41 @@ class PostProcessor {
         }
       }
 
-      // Step 3: Fix common missing comma patterns (be very careful)
-      // Only fix obvious cases outside of strings
-      const fixes = [
-        // Fix: ] "key" -> ], "key"  (but not inside strings)
-        { pattern: /(\])\s*(")/g, replacement: '$1, $2' },
-        // Fix: } "key" -> }, "key"
-        { pattern: /(\})\s*(")/g, replacement: '$1, $2' },
-        // Fix: number "key" -> number, "key"
-        { pattern: /(\d+)\s*(")/g, replacement: '$1, $2' },
-        // Fix: "value" "key" -> "value", "key" (in objects)
-        { pattern: /("[\w\s]+")\s+("[\w\s]+":)/g, replacement: '$1, $2' },
-      ];
-
-      for (const fix of fixes) {
-        const before = repaired;
-        repaired = repaired.replace(fix.pattern, fix.replacement);
-        if (repaired !== before) {
-          try {
-            return JSON.parse(repaired);
-          } catch (e2) {
-            // Continue with next fix
-          }
-        }
-      }
-
       // Step 4: Try using error position to fix missing commas
-      // Find the error position and try to fix it
       const errorMatch = e.message.match(/position (\d+)/);
       if (errorMatch) {
         const errorPos = parseInt(errorMatch[1]);
         console.log('[PostProcessor] Error at position:', errorPos);
-        const contextStart = Math.max(0, errorPos - 100);
-        const contextEnd = Math.min(jsonStr.length, errorPos + 100);
-        console.log('[PostProcessor] Context around error:', jsonStr.substring(contextStart, contextEnd));
         
         // If error is about missing comma, try adding one
         if (e.message.includes("Expected ','") || e.message.includes("Expected ',' or ']'")) {
-          // Look backwards from error position to find where to insert comma
-          // We want to find the end of the previous element
-          let insertPos = errorPos;
+          // Look for natural break points around error position
+          const searchWindow = 50;
+          const start = Math.max(0, errorPos - searchWindow);
+          const end = Math.min(repaired.length, errorPos + searchWindow);
+          const context = repaired.substring(start, end);
           
-          // Try different positions around the error
-          for (let offset = 0; offset <= 5 && insertPos - offset > 0; offset++) {
-            const testPos = errorPos - offset;
-            const charBefore = jsonStr[testPos - 1];
-            const charAt = jsonStr[testPos];
-            
-            // If we find a quote, closing brace, or bracket before the error, insert comma there
-            if ((charBefore === '"' || charBefore === '}' || charBefore === ']' || charBefore === '}') && 
-                (charAt === '"' || charAt === '{' || charAt === '[')) {
-              const withComma = jsonStr.substring(0, testPos) + ',' + jsonStr.substring(testPos);
+          // Try to find a good place to insert comma
+          const patterns = [
+            { regex: /("\s*")/, insert: '"', "'" },
+            { regex: /(\]\s*")/, insert: ']"', ",'" },
+            { regex: /(}\s*")/, insert: '}"', ",'" },
+            { regex: /(\d\s*")/, insert: /\d/, ",'" },
+          ];
+          
+          for (const pattern of patterns) {
+            const match = context.match(pattern.regex);
+            if (match) {
+              const replacement = context.replace(pattern.regex, (match, p1) => {
+                return match.replace(/\s+"/, '", "');
+              });
+              const newRepaired = repaired.substring(0, start) + replacement + repaired.substring(end);
               try {
-                console.log('[PostProcessor] Inserted comma at position', testPos);
-                return JSON.parse(withComma);
+                console.log('[PostProcessor] Pattern-based comma insertion');
+                return JSON.parse(newRepaired);
               } catch (e3) {
-                // Try next position
+                // Continue
               }
-            }
-          }
-          
-          // Fallback: just insert comma right before error position
-          if (errorPos > 0 && errorPos < jsonStr.length) {
-            const withComma = jsonStr.substring(0, errorPos) + ',' + jsonStr.substring(errorPos);
-            try {
-              console.log('[PostProcessor] Inserted comma at error position');
-              return JSON.parse(withComma);
-            } catch (e3) {
-              // Didn't work
             }
           }
         }
@@ -218,6 +197,43 @@ class PostProcessor {
       console.log('[PostProcessor] All repair attempts failed');
       return null;
     }
+  }
+
+  /**
+   * Normalize confidence value - convert string "high"/"medium"/"low" to numbers
+   */
+  _normalizeConfidence(data) {
+    if (data.confidence) {
+      if (typeof data.confidence === 'string') {
+        const confidenceMap = {
+          'high': 0.9,
+          'medium': 0.6,
+          'low': 0.3,
+          'very high': 0.95,
+          'very low': 0.1
+        };
+        const normalized = confidenceMap[data.confidence.toLowerCase()];
+        if (normalized !== undefined) {
+          data.confidence = normalized;
+          console.log('[PostProcessor] Normalized confidence from string to number:', normalized);
+        } else {
+          // Try to parse as number
+          const parsed = parseFloat(data.confidence);
+          if (!isNaN(parsed)) {
+            data.confidence = parsed;
+          } else {
+            // Default to 0.5 if unrecognized
+            data.confidence = 0.5;
+          }
+        }
+      }
+      
+      // Ensure confidence is within bounds
+      if (typeof data.confidence === 'number') {
+        data.confidence = Math.max(0, Math.min(1, data.confidence));
+      }
+    }
+    return data;
   }
 
   /**
@@ -233,7 +249,8 @@ class PostProcessor {
 
     // Step 1: Try direct parse
     try {
-      return JSON.parse(cleaned);
+      const parsed = JSON.parse(cleaned);
+      return this._normalizeConfidence(parsed);
     } catch (error) {
       console.log('[PostProcessor] Direct parse failed, attempting extraction...');
     }
@@ -246,17 +263,16 @@ class PostProcessor {
       try {
         const parsed = JSON.parse(codeBlockContent);
         console.log('[PostProcessor] Successfully parsed extracted JSON');
-        return parsed;
+        return this._normalizeConfidence(parsed);
       } catch (e) {
         console.log('[PostProcessor] Code block content parse failed:', e.message);
         console.log('[PostProcessor] Attempting JSON repair...');
         const repaired = this._repairJSON(codeBlockContent);
         if (repaired) {
           console.log('[PostProcessor] JSON repair successful');
-          return repaired;
+          return this._normalizeConfidence(repaired);
         }
         console.log('[PostProcessor] JSON repair also failed');
-        console.log('[PostProcessor] Error details:', e.message);
       }
     } else {
       console.log('[PostProcessor] No code block found in output');
@@ -267,13 +283,14 @@ class PostProcessor {
     if (jsonObject) {
       console.log('[PostProcessor] Extracted JSON object, length:', jsonObject.length);
       try {
-        return JSON.parse(jsonObject);
+        const parsed = JSON.parse(jsonObject);
+        return this._normalizeConfidence(parsed);
       } catch (e) {
         console.log('[PostProcessor] Extracted object parse failed, attempting repair...');
         const repaired = this._repairJSON(jsonObject);
         if (repaired) {
           console.log('[PostProcessor] JSON repair successful');
-          return repaired;
+          return this._normalizeConfidence(repaired);
         }
         console.log('[PostProcessor] Object extraction error:', e.message);
       }
@@ -285,33 +302,61 @@ class PostProcessor {
     if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
       const possibleJson = cleaned.substring(firstBrace, lastBrace + 1);
       try {
-        return JSON.parse(possibleJson);
+        const parsed = JSON.parse(possibleJson);
+        return this._normalizeConfidence(parsed);
       } catch (e) {
-        // Try to fix common issue: trailing commas
+        // Try to fix common issues
         let fixed = possibleJson.replace(/,\s*([}\]])/g, '$1');
+        // Fix unterminated strings
+        if (!fixed.endsWith('"') && (fixed.match(/"/g) || []).length % 2 !== 0) {
+          fixed = fixed + '"';
+        }
         try {
-          return JSON.parse(fixed);
+          const parsed = JSON.parse(fixed);
+          return this._normalizeConfidence(parsed);
         } catch (err) {
           // Try final repair step
           const repaired = this._repairJSON(possibleJson);
           if (repaired) {
-            return repaired;
+            return this._normalizeConfidence(repaired);
           }
         }
       }
     }
 
-    // Step 4.5: Final rescue - if output starts with '{' but missing closing '}', try to close it
+    // Step 5: Emergency recovery - if output starts with '{' but is truncated
     if (cleaned.startsWith('{')) {
-      const open = (cleaned.match(/{/g) || []).length;
-      const close = (cleaned.match(/}/g) || []).length;
-      if (open > close) {
-        const autoClosed = cleaned + '}'.repeat(open - close);
+      const trimmedForRecovery = cleaned;
+      const openBraces = (trimmedForRecovery.match(/{/g) || []).length;
+      const closeBraces = (trimmedForRecovery.match(/}/g) || []).length;
+      
+      if (openBraces > closeBraces) {
+        // Add missing closing braces
+        let recovered = trimmedForRecovery;
+        for (let i = 0; i < openBraces - closeBraces; i++) {
+          recovered += '}';
+        }
+        
+        // Fix unterminated strings
+        const quoteCount = (recovered.match(/"/g) || []).length;
+        if (quoteCount % 2 !== 0) {
+          recovered = recovered + '"';
+        }
+        
+        // Close any open arrays
+        const openArrays = (recovered.match(/\[/g) || []).length;
+        const closeArrays = (recovered.match(/\]/g) || []).length;
+        for (let i = 0; i < openArrays - closeArrays; i++) {
+          recovered += ']';
+        }
+        
         try {
-          console.log('[PostProcessor] FINAL RESCUE: Auto-closing JSON object');
-          return JSON.parse(autoClosed);
+          console.log('[PostProcessor] EMERGENCY RECOVERY: Attempting to salvage truncated JSON');
+          const parsed = JSON.parse(recovered);
+          console.log('[PostProcessor] Emergency recovery successful');
+          return this._normalizeConfidence(parsed);
         } catch (e) {
-          console.log('[PostProcessor] FINAL RESCUE parse failed:', e.message); 
+          console.log('[PostProcessor] EMERGENCY RECOVERY failed:', e.message);
         }
       }
     }
@@ -324,7 +369,8 @@ class PostProcessor {
 
     // Final error - log the original output for debugging
     console.error('[PostProcessor] All JSON extraction methods failed');
-    console.error('[PostProcessor] Output preview:', cleaned.substring(0, 500));
+    console.error('[PostProcessor] Output preview (first 1000 chars):', cleaned.substring(0, 1000));
+    console.error('[PostProcessor] Output length:', cleaned.length);
     throw new Error(`Failed to parse JSON after ${retries} retries. Output may contain invalid JSON or be in an unexpected format.`);
   }
 
@@ -433,6 +479,9 @@ class PostProcessor {
       errors.push('weeks must be an array');
     }
 
+    // Normalize confidence if not already done
+    data = this._normalizeConfidence(data);
+    
     if (data.confidence && (typeof data.confidence !== 'number' || data.confidence < 0 || data.confidence > 1)) {
       errors.push('confidence must be a number between 0 and 1');
     }
@@ -463,6 +512,13 @@ class PostProcessor {
 
     if (data.rewrites && data.rewrites.length !== 3) {
       errors.push('Must provide exactly 3 rewrite variations');
+    }
+
+    // Normalize confidence if not already done
+    data = this._normalizeConfidence(data);
+    
+    if (data.confidence && (typeof data.confidence !== 'number' || data.confidence < 0 || data.confidence > 1)) {
+      errors.push('confidence must be a number between 0 and 1');
     }
 
     return {
