@@ -3,7 +3,7 @@
  * Per markdown.md section 4: Prompt templates
  */
 
-const SYSTEM_PROMPT = `You are an expert assistant. Return output in valid JSON only with keys exactly as requested. Do not include extra commentary.`;
+const SYSTEM_PROMPT = `You are an expert assistant. Return output in valid JSON only with keys exactly as requested. Do not include extra commentary, markdown code blocks, or any formatting. Return ONLY the raw JSON object, nothing else.`;
 
 class PromptManager {
   generatePrompt(featureType, userParams, contextText = '') {
