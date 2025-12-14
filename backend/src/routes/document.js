@@ -20,7 +20,7 @@ const router = express.Router();
 const storage = multer.memoryStorage();
 const upload = multer({
   storage,
-  limits: { fileSize: 50 * 1024 * 1024 },
+  limits: { fileSize: 50 * 1024 * 1024 }, // 50MB max
   fileFilter: (req, file, cb) => {
     const allowedMimes = [
       'application/pdf',
@@ -42,6 +42,7 @@ const upload = multer({
 
 /**
  * Upload and initiate document processing
+ * Returns 202 Accepted with request ID for polling
  */
 router.post('/upload', optionalAuth, upload.single('file'), async (req, res) => {
   const startTime = Date.now();
@@ -52,9 +53,9 @@ router.post('/upload', optionalAuth, upload.single('file'), async (req, res) => 
       return res.status(400).json({ error: 'No file provided' });
     }
 
-    const generateRoadmap = req.body.generateRoadmap === 'true' || req.body.generateRoadmap === true;
+    const { generateRoadmap = false } = req.body;
 
-    // Create initial request document
+    // Create initial request document (pending status)
     const requestDoc = new Request({
       requestId,
       userId: req.userId || null,
@@ -64,7 +65,7 @@ router.post('/upload', optionalAuth, upload.single('file'), async (req, res) => 
         filename: req.file.originalname,
         filesize: req.file.size,
         mimetype: req.file.mimetype,
-        generateRoadmap
+        generateRoadmap: generateRoadmap === 'true' || generateRoadmap === true
       },
       metrics: {
         duration_ms: Date.now() - startTime
@@ -73,8 +74,8 @@ router.post('/upload', optionalAuth, upload.single('file'), async (req, res) => 
 
     await requestDoc.save();
 
-    // Process document asynchronously
-    processDocumentAsync(requestId, req.file, generateRoadmap, req.userId);
+    // Process document asynchronously (in production, use Redis queue)
+    processDocumentAsync(requestId, req.file, generateRoadmap === 'true' || generateRoadmap === true, req.userId);
 
     // Return 202 Accepted
     res.status(202).json({
@@ -106,7 +107,7 @@ router.post('/upload', optionalAuth, upload.single('file'), async (req, res) => 
 });
 
 /**
- * Check document processing status
+ * Check document processing status and get results
  */
 router.get('/request/:requestId', optionalAuth, async (req, res) => {
   try {
@@ -135,19 +136,19 @@ router.get('/request/:requestId', optionalAuth, async (req, res) => {
 
 /**
  * Async document processing function
+ * In production, this should be a Redis job queue
  */
 async function processDocumentAsync(requestId, file, generateRoadmap, userId) {
   const processStartTime = Date.now();
-  
-  const updateRequest = async (status, updates) => {
-    await Request.findOneAndUpdate(
-      { requestId },
-      { status, ...updates },
-      { new: true }
-    );
-  };
-
   try {
+    const updateRequest = async (status, updates) => {
+      await Request.findOneAndUpdate(
+        { requestId },
+        { status, ...updates },
+        { new: true }
+      );
+    };
+
     // Update status to processing
     await updateRequest('processing', {});
 
@@ -176,35 +177,26 @@ async function processDocumentAsync(requestId, file, generateRoadmap, userId) {
     if (useDirectSummarization) {
       // Small document: direct summarization
       console.log(`[Document ${requestId}] Using direct summarization...`);
-      result = await summarizeDirectly(cleanedText, requestId);
+      result = await summarizeDirectly(cleanedText, generateRoadmap);
     } else {
       // Large document: map-reduce summarization
       console.log(`[Document ${requestId}] Using map-reduce summarization...`);
-      result = await summarizeWithMapReduce(cleanedText, requestId);
-    }
-
-    // Step 4: Generate roadmap if requested
-    if (generateRoadmap && result) {
-      console.log(`[Document ${requestId}] Generating roadmap...`);
-      try {
-        const roadmap = await generateDocumentRoadmap(cleanedText, result, requestId);
-        if (roadmap) {
-          result.roadmap = roadmap;
-        }
-      } catch (roadmapError) {
-        console.warn(`[Document ${requestId}] Roadmap generation failed:`, roadmapError.message);
-      }
+      result = await summarizeWithMapReduce(cleanedText, generateRoadmap);
     }
 
     // Sanitize result
     result = postProcessor.sanitize(result);
+
+    // Save extracted text reference
+    result.extracted_text_path = `s3://clarityai-bucket/documents/${requestId}/extracted.txt`;
 
     // Update request with results
     await updateRequest('complete', {
       result,
       metrics: {
         duration_ms: Date.now() - processStartTime,
-        modelProvider: modelAdapter.getProviderName() || 'unknown',
+        modelProvider: 'openai',
+        modelVersion: modelAdapter.modelName,
         ocrPageCount: extraction.pages,
         extractedChars: cleanedText.length,
         confidence: result.confidence || 0.75
@@ -213,30 +205,34 @@ async function processDocumentAsync(requestId, file, generateRoadmap, userId) {
 
     console.log(`[Document ${requestId}] Processing complete`);
   } catch (error) {
-    console.error(`Document processing failed for ${requestId}:`, error);
+    logger.error(`Document processing failed for ${requestId}`, error);
 
-    await updateRequest('failed', {
-      errorMessage: error.message,
-      metrics: { duration_ms: Date.now() - processStartTime }
-    });
+    await Request.findOneAndUpdate(
+      { requestId },
+      {
+        status: 'failed',
+        errorMessage: error.message,
+        metrics: { duration_ms: Date.now() - processStartTime }
+      }
+    );
   }
 }
 
 /**
  * Direct summarization for small documents
  */
-async function summarizeDirectly(text, requestId) {
+async function summarizeDirectly(text, generateRoadmap) {
   const { systemPrompt, userPrompt, metadata } = promptManager.generatePrompt(
     'document',
-    { isChunk: false },
-    text
+    { isChunk: false }
   );
+
+  const fullPrompt = userPrompt.replace('<<chunk text>>', text);
 
   const modelResponse = await modelAdapter.callModel(
     systemPrompt,
-    userPrompt,
-    metadata.maxTokens,
-    metadata.stopSequences
+    fullPrompt,
+    metadata.maxTokens
   );
 
   if (!modelResponse.success) {
@@ -260,7 +256,7 @@ async function summarizeDirectly(text, requestId) {
 /**
  * Map-reduce summarization for large documents
  */
-async function summarizeWithMapReduce(text, requestId) {
+async function summarizeWithMapReduce(text, generateRoadmap) {
   // Step 1: Chunk the document
   const chunks = documentProcessor.chunkDocument(text, 2000, 100);
   console.log(`[MapReduce] Processing ${chunks.length} chunks...`);
@@ -272,15 +268,15 @@ async function summarizeWithMapReduce(text, requestId) {
 
     const { systemPrompt, userPrompt, metadata } = promptManager.generatePrompt(
       'document',
-      { isChunk: true },
-      chunks[i].text
+      { isChunk: true }
     );
+
+    const mapPrompt = userPrompt.replace('<<chunk text>>', chunks[i].text);
 
     const modelResponse = await modelAdapter.callModel(
       systemPrompt,
-      userPrompt,
-      metadata.maxTokens,
-      metadata.stopSequences
+      mapPrompt,
+      metadata.maxTokens
     );
 
     if (modelResponse.success) {
@@ -300,20 +296,14 @@ async function summarizeWithMapReduce(text, requestId) {
   console.log('[MapReduce] Reducing chunk summaries...');
   const reduced = documentProcessor.reduceChunkSummaries(chunkResults);
 
-  // Step 4: Create reduce prompt from combined summaries
-  const reducePrompt = documentProcessor.createReducePrompt(chunkResults);
-  
-  const { systemPrompt, userPrompt, metadata } = promptManager.generatePrompt(
-    'document',
-    { isChunk: false },
-    reducePrompt
-  );
+  // Step 4: Generate final summary
+  const { systemPrompt, userPrompt } = promptManager.generatePrompt('document', {});
+  const reducePrompt = documentProcessor.createReducePrompt(chunkResults, generateRoadmap);
 
   const finalResponse = await modelAdapter.callModel(
     systemPrompt,
-    userPrompt,
-    3000,
-    metadata.stopSequences
+    reducePrompt,
+    3000
   );
 
   if (!finalResponse.success) {
@@ -324,61 +314,14 @@ async function summarizeWithMapReduce(text, requestId) {
   if (!result) {
     // Fallback: use reduced results
     result = {
-      summary_short: reduced.summaries.slice(0, 2).join(' ') || 'Document summary',
-      highlights: reduced.highlights || [],
-      action_items: reduced.actionItems || [],
-      keywords: reduced.keywords || []
+      summary_short: reduced.summaries.slice(0, 2).join(' '),
+      highlights: reduced.highlights,
+      action_items: reduced.actionItems,
+      keywords: reduced.keywords
     };
   }
 
   return result;
-}
-
-/**
- * Generate roadmap based on document content
- */
-async function generateDocumentRoadmap(text, summary, requestId) {
-  console.log(`[${requestId}] Generating document roadmap`);
-  
-  const roadmapPrompt = `Based on this document summary, create a learning roadmap.
-  
-Document Summary:
-${summary.summary_short || 'No summary available'}
-
-Key Topics/Keywords:
-${(summary.keywords || []).join(', ')}
-
-Please create a 4-8 week learning roadmap to master the topics covered in this document.
-Focus on practical learning with resources and milestones.`;
-
-  const systemPrompt = `You are an expert learning advisor. Create a structured learning roadmap based on document content.
-Return ONLY valid JSON with: weeks (array), resources (array), confidence (number 0.0-1.0).
-Each week should have: week_number, tasks, estimated_hours, milestone.
-Each resource should have: title, url (or "none" if not applicable).`;
-
-  const modelResponse = await modelAdapter.callModel(
-    systemPrompt,
-    roadmapPrompt,
-    2000,
-    ['\n}\n', '\n}', '}\n', '}']
-  );
-
-  if (!modelResponse.success) {
-    throw new Error(`Roadmap generation failed: ${modelResponse.error}`);
-  }
-
-  const roadmap = postProcessor.parseJSON(modelResponse.content);
-  if (!roadmap) {
-    throw new Error('Failed to parse roadmap JSON');
-  }
-
-  // Validate roadmap
-  const validation = postProcessor.validateSchema(roadmap, 'roadmap');
-  if (!validation.valid) {
-    console.warn(`[${requestId}] Roadmap validation errors:`, validation.errors);
-  }
-
-  return roadmap;
 }
 
 export default router;
