@@ -1,3 +1,4 @@
+
 /**
  * Roadmap Generator route
  */
@@ -8,7 +9,7 @@ import modelAdapter from '../modules/modelAdapter.js';
 import postProcessor from '../modules/postProcessor.js';
 import Request from '../models/Request.js';
 import { optionalAuth } from '../middleware/auth.js';
-import { generateRequestId } from '../utils/helpers.js';
+import { generateRequestId, parseConfidence } from '../utils/helpers.js';
 import logger from '../utils/logger.js';
 
 const router = express.Router();
@@ -34,8 +35,7 @@ router.post('/roadmap', optionalAuth, async (req, res) => {
     const modelResponse = await modelAdapter.callModel(
       systemPrompt,
       userPrompt,
-      metadata.maxTokens,
-      metadata.stopSequences
+      metadata.maxTokens
     );
 
     if (!modelResponse.success) {
@@ -56,6 +56,11 @@ router.post('/roadmap', optionalAuth, async (req, res) => {
 
     result = postProcessor.sanitize(result);
 
+    // Normalize confidence
+    if (result.confidence && typeof result.confidence !== 'number') {
+      result.confidence = parseConfidence(result.confidence);
+    }
+
     // Save request
     const requestDoc = new Request({
       requestId,
@@ -65,11 +70,12 @@ router.post('/roadmap', optionalAuth, async (req, res) => {
       input: { goal, timeframeWeeks, level },
       result,
       metrics: {
-        promptTokens: modelResponse.tokens.prompt || 0,
-        completionTokens: modelResponse.tokens.completion || 0,
-        totalTokens: modelResponse.tokens.total || 0,
+        promptTokens: modelResponse.tokens.prompt,
+        completionTokens: modelResponse.tokens.completion,
+        totalTokens: modelResponse.tokens.total,
         duration_ms: Date.now() - startTime,
-        modelProvider: modelAdapter.getProviderName() || 'unknown',
+        modelProvider: 'openai',
+        modelVersion: modelAdapter.modelName,
         confidence: result.confidence || 0.7
       }
     });
@@ -83,10 +89,11 @@ router.post('/roadmap', optionalAuth, async (req, res) => {
       startTime,
       endTime: Date.now(),
       status: 'success',
-      modelProvider: modelAdapter.getProviderName() || 'unknown',
-      promptTokens: modelResponse.tokens.prompt || 0,
-      completionTokens: modelResponse.tokens.completion || 0,
-      totalTokens: modelResponse.tokens.total || 0,
+      modelProvider: 'openai',
+      modelVersion: modelAdapter.modelName,
+      promptTokens: modelResponse.tokens.prompt,
+      completionTokens: modelResponse.tokens.completion,
+      totalTokens: modelResponse.tokens.total,
       confidence: result.confidence || 0.7
     });
 
