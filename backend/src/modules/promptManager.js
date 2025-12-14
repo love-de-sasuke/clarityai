@@ -3,7 +3,7 @@
  * Per markdown.md section 4: Prompt templates
  */
 
-const SYSTEM_PROMPT = `You are an expert assistant. You MUST return ONLY valid JSON. Do NOT use markdown code blocks, do NOT wrap JSON in backticks, do NOT add any text before or after the JSON. Return ONLY the raw JSON object starting with { and ending with }. Ensure all arrays have commas between elements.`;
+const SYSTEM_PROMPT = `You are an expert assistant. You MUST return ONLY valid JSON. Do NOT use markdown code blocks, do NOT wrap JSON in backticks, do NOT add any text before or after the JSON. Return ONLY a single, valid JSON object starting with { and ending with }. ENSURE all arrays/objects are properly closed (never cut off); NEVER truncate JSON. If the answer cannot fit in the limit, return a shorter answer, but NEVER incomplete JSON.`;
 
 class PromptManager {
   generatePrompt(featureType, userParams, contextText = '') {
@@ -17,7 +17,7 @@ class PromptManager {
     switch (featureType) {
       case 'explain':
         userPrompt = this._generateExplainPrompt(userParams);
-        metadata.maxTokens = 1500;
+        metadata.maxTokens = userParams.detailLevel === 'detailed' ? 3000 : 1500;
         break;
 
       case 'roadmap':
@@ -56,12 +56,7 @@ Return ONLY valid JSON, using these exact keys: summary, examples (array of 3 st
 
 Quiz format: [{"q":"question","options":["a","b","c","d"],"answer":0}]
 
-OUTPUT REQUIREMENTS (IMPORTANT):
-- DO NOT return any markdown, code blocks or backticks.
-- DO NOT add ANY extra text before or after the JSON object.
-- START your output with '{' and END your output with '}'.
-- ENSURE every array or object uses proper commas between elements.
-- Only valid JSON is accepted.`;
+IMPORTANT: Output MUST start with '{' and end with '}'. Do NOT use markdown/code. Do NOT truncate or cut off arrays/objects -- always return well-formed JSON, even if answer is shorter. If the answer cannot fit, summarize more briefly, but NEVER return incomplete JSON.`;
   }
 
   _generateRoadmapPrompt(params) {
