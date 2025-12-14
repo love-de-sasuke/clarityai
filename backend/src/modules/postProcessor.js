@@ -5,6 +5,222 @@
 
 class PostProcessor {
   /**
+   * Extract JSON from markdown code blocks
+   */
+  _extractFromCodeBlocks(text) {
+    // Remove any leading/trailing whitespace first
+    const trimmed = text.trim();
+    
+    // Find all code blocks - use non-greedy match to get content between first ``` and last ```
+    // Pattern: ```json\n...\n``` or ```\n...\n```
+    const patterns = [
+      /```json\s*\n([\s\S]*?)\n```/i,        // ```json\n...\n```
+      /```json\s*([\s\S]*?)```/i,             // ```json...```
+      /```\s*\n([\s\S]*?)\n```/,             // ```\n...\n```
+      /```\s*([\s\S]*?)```/,                  // ```...```
+    ];
+
+    for (const pattern of patterns) {
+      const match = trimmed.match(pattern);
+      if (match && match[1]) {
+        const extracted = match[1].trim();
+        // Make sure we actually extracted something (not just whitespace)
+        if (extracted.length > 10 && extracted.startsWith('{')) {
+          console.log('[PostProcessor] Successfully extracted from code block using pattern');
+          return extracted;
+        }
+      }
+    }
+
+    // If no match, try finding content between first ``` and last ```
+    const firstBacktick = trimmed.indexOf('```');
+    const lastBacktick = trimmed.lastIndexOf('```');
+    if (firstBacktick !== -1 && lastBacktick !== -1 && lastBacktick > firstBacktick + 3) {
+      // Extract content between the backticks
+      let content = trimmed.substring(firstBacktick + 3, lastBacktick);
+      // Remove "json" tag if present
+      content = content.replace(/^json\s*\n?/i, '');
+      content = content.trim();
+      if (content.length > 10 && content.startsWith('{')) {
+        console.log('[PostProcessor] Extracted using backtick positions');
+        return content;
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Extract JSON object by finding balanced braces
+   */
+  _extractJSONObject(text) {
+    let startIndex = -1;
+    let braceCount = 0;
+    let inString = false;
+    let escapeNext = false;
+
+    for (let i = 0; i < text.length; i++) {
+      const char = text[i];
+
+      if (escapeNext) {
+        escapeNext = false;
+        continue;
+      }
+
+      if (char === '\\') {
+        escapeNext = true;
+        continue;
+      }
+
+      if (char === '"' && !escapeNext) {
+        inString = !inString;
+        continue;
+      }
+
+      if (!inString) {
+        if (char === '{') {
+          if (startIndex === -1) startIndex = i;
+          braceCount++;
+        } else if (char === '}') {
+          braceCount--;
+          if (braceCount === 0 && startIndex !== -1) {
+            return text.substring(startIndex, i + 1);
+          }
+        }
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Attempt to repair common JSON syntax errors
+   */
+  _repairJSON(jsonStr) {
+    try {
+      // Try parsing first - if it works, no repair needed
+      return JSON.parse(jsonStr);
+    } catch (e) {
+      console.log('[PostProcessor] JSON repair attempt, error:', e.message);
+      
+      let repaired = jsonStr;
+
+      // Step 1: Remove trailing commas (safest fix)
+      repaired = repaired.replace(/,\s*([}\]])/g, '$1');
+      try {
+        return JSON.parse(repaired);
+      } catch (e1) {
+        // Continue
+      }
+
+      // Step 2: Fix missing commas in arrays (most common issue with Gemini)
+      // The error "Expected ',' or ']' after array element" means missing comma between elements
+      let arrayFixed = repaired;
+      
+      // Fix missing commas - be very specific to avoid breaking valid JSON
+      // Pattern 1: "item1" "item2" in arrays (two quoted strings with space, followed by ] or ,)
+      // Only fix if followed by closing bracket or comma (indicating array context)
+      arrayFixed = arrayFixed.replace(/"\s+"(?=\s*[,\]])/g, '", "');
+      
+      // Pattern 2: number "text" or number number (in arrays)
+      arrayFixed = arrayFixed.replace(/(\d+)\s+(")(?=\s*[,\]])/g, '$1, $2');
+      arrayFixed = arrayFixed.replace(/(\d+)\s+(\d+)(?=\s*[,\]])/g, '$1, $2');
+      
+      // Pattern 3: } "key" or ] "key" (object/array followed by quote - missing comma)
+      arrayFixed = arrayFixed.replace(/([}\]])\s*(")/g, '$1, $2');
+      
+      // Pattern 4: "value" "key": (in objects - missing comma between properties)
+      // But be careful - only if followed by colon (indicating object property)
+      arrayFixed = arrayFixed.replace(/"\s+"([a-zA-Z_][a-zA-Z0-9_]*":)/g, '", "$1');
+      
+      if (arrayFixed !== repaired) {
+        try {
+          console.log('[PostProcessor] Array/object comma fixes applied');
+          return JSON.parse(arrayFixed);
+        } catch (e2) {
+          repaired = arrayFixed;
+        }
+      }
+
+      // Step 3: Fix common missing comma patterns (be very careful)
+      // Only fix obvious cases outside of strings
+      const fixes = [
+        // Fix: ] "key" -> ], "key"  (but not inside strings)
+        { pattern: /(\])\s*(")/g, replacement: '$1, $2' },
+        // Fix: } "key" -> }, "key"
+        { pattern: /(\})\s*(")/g, replacement: '$1, $2' },
+        // Fix: number "key" -> number, "key"
+        { pattern: /(\d+)\s*(")/g, replacement: '$1, $2' },
+        // Fix: "value" "key" -> "value", "key" (in objects)
+        { pattern: /("[\w\s]+")\s+("[\w\s]+":)/g, replacement: '$1, $2' },
+      ];
+
+      for (const fix of fixes) {
+        const before = repaired;
+        repaired = repaired.replace(fix.pattern, fix.replacement);
+        if (repaired !== before) {
+          try {
+            return JSON.parse(repaired);
+          } catch (e2) {
+            // Continue with next fix
+          }
+        }
+      }
+
+      // Step 4: Try using error position to fix missing commas
+      // Find the error position and try to fix it
+      const errorMatch = e.message.match(/position (\d+)/);
+      if (errorMatch) {
+        const errorPos = parseInt(errorMatch[1]);
+        console.log('[PostProcessor] Error at position:', errorPos);
+        const contextStart = Math.max(0, errorPos - 100);
+        const contextEnd = Math.min(jsonStr.length, errorPos + 100);
+        console.log('[PostProcessor] Context around error:', jsonStr.substring(contextStart, contextEnd));
+        
+        // If error is about missing comma, try adding one
+        if (e.message.includes("Expected ','") || e.message.includes("Expected ',' or ']'")) {
+          // Look backwards from error position to find where to insert comma
+          // We want to find the end of the previous element
+          let insertPos = errorPos;
+          
+          // Try different positions around the error
+          for (let offset = 0; offset <= 5 && insertPos - offset > 0; offset++) {
+            const testPos = errorPos - offset;
+            const charBefore = jsonStr[testPos - 1];
+            const charAt = jsonStr[testPos];
+            
+            // If we find a quote, closing brace, or bracket before the error, insert comma there
+            if ((charBefore === '"' || charBefore === '}' || charBefore === ']' || charBefore === '}') && 
+                (charAt === '"' || charAt === '{' || charAt === '[')) {
+              const withComma = jsonStr.substring(0, testPos) + ',' + jsonStr.substring(testPos);
+              try {
+                console.log('[PostProcessor] Inserted comma at position', testPos);
+                return JSON.parse(withComma);
+              } catch (e3) {
+                // Try next position
+              }
+            }
+          }
+          
+          // Fallback: just insert comma right before error position
+          if (errorPos > 0 && errorPos < jsonStr.length) {
+            const withComma = jsonStr.substring(0, errorPos) + ',' + jsonStr.substring(errorPos);
+            try {
+              console.log('[PostProcessor] Inserted comma at error position');
+              return JSON.parse(withComma);
+            } catch (e3) {
+              // Didn't work
+            }
+          }
+        }
+      }
+
+      console.log('[PostProcessor] All repair attempts failed');
+      return null;
+    }
+  }
+
+  /**
    * Parse and validate JSON from LLM output
    */
   parseJSON(output, retryCallback = null, retries = 0) {
@@ -15,100 +231,97 @@ class PostProcessor {
     // Clean the output first
     let cleaned = output.trim();
 
+    // Step 1: Try direct parse
     try {
-      // Try direct parse first
       return JSON.parse(cleaned);
     } catch (error) {
       console.log('[PostProcessor] Direct parse failed, attempting extraction...');
-      
-      // Try extracting JSON from markdown code blocks (multiple patterns)
-      // Pattern 1: ```json\n...\n``` (most common with Gemini)
-      let jsonMatch = cleaned.match(/```json\s*\n?([\s\S]*?)\n?```/i);
-      if (!jsonMatch) {
-        // Pattern 2: ```json ... ``` (without newlines)
-        jsonMatch = cleaned.match(/```json\s*([\s\S]*?)```/i);
-      }
-      if (!jsonMatch) {
-        // Pattern 3: ``` ... ``` (without json tag)
-        jsonMatch = cleaned.match(/```\s*\n?([\s\S]*?)\n?```/);
-      }
-      if (!jsonMatch) {
-        // Pattern 4: ```json\n...``` (ending without newline)
-        jsonMatch = cleaned.match(/```json\s*\n([\s\S]*?)```/i);
-      }
-      
-      if (jsonMatch && jsonMatch[1]) {
-        try {
-          // Clean the extracted content - remove leading/trailing whitespace and newlines
-          let jsonContent = jsonMatch[1].trim();
-          // Remove any leading/trailing quotes if present
-          jsonContent = jsonContent.replace(/^["']|["']$/g, '');
-          return JSON.parse(jsonContent);
-        } catch (e) {
-          console.log('[PostProcessor] Code block parse failed:', e.message);
-          console.log('[PostProcessor] Extracted content:', jsonMatch[1].substring(0, 200));
-        }
-      }
-
-      // Try finding JSON object with balanced braces (more robust)
-      // This handles cases where JSON is not in code blocks
-      const jsonObjectPattern = /\{[\s\S]*\}/;
-      const objectMatch = cleaned.match(jsonObjectPattern);
-      if (objectMatch) {
-        try {
-          // Try to find the complete JSON object by counting braces
-          let jsonStr = '';
-          let braceCount = 0;
-          let startIndex = -1;
-          
-          for (let i = 0; i < cleaned.length; i++) {
-            if (cleaned[i] === '{') {
-              if (startIndex === -1) startIndex = i;
-              braceCount++;
-            } else if (cleaned[i] === '}') {
-              braceCount--;
-              if (braceCount === 0 && startIndex !== -1) {
-                jsonStr = cleaned.substring(startIndex, i + 1);
-                break;
-              }
-            }
-          }
-          
-          if (jsonStr) {
-            return JSON.parse(jsonStr);
-          }
-          
-          // Fallback to simple match
-          return JSON.parse(objectMatch[0]);
-        } catch (e) {
-          console.log('[PostProcessor] Object extraction failed:', e.message);
-        }
-      }
-
-      // Try removing markdown formatting and extra text
-      // Remove any text before the first {
-      const firstBrace = cleaned.indexOf('{');
-      if (firstBrace !== -1) {
-        try {
-          const jsonOnly = cleaned.substring(firstBrace);
-          // Remove any text after the last }
-          const lastBrace = jsonOnly.lastIndexOf('}');
-          if (lastBrace !== -1) {
-            const finalJson = jsonOnly.substring(0, lastBrace + 1);
-            return JSON.parse(finalJson);
-          }
-        } catch (e) {
-          console.log('[PostProcessor] Brace-based extraction failed:', e.message);
-        }
-      }
-
-      if (retries < 2 && retryCallback) {
-        console.log('[PostProcessor] Attempting corrective re-prompt...');
-        return null; // Signal for retry
-      }
-
-      throw new Error(`Failed to parse JSON after ${retries} retries: ${error.message}`);
     }
+
+    // Step 2: Extract from markdown code blocks (highest priority for Gemini)
+    const codeBlockContent = this._extractFromCodeBlocks(cleaned);
+    if (codeBlockContent) {
+      console.log('[PostProcessor] Extracted from code block, length:', codeBlockContent.length);
+      console.log('[PostProcessor] First 200 chars of extracted:', codeBlockContent.substring(0, 200));
+      
+      // Try direct parse of extracted content
+      try {
+        const parsed = JSON.parse(codeBlockContent);
+        console.log('[PostProcessor] Successfully parsed extracted JSON');
+        return parsed;
+      } catch (e) {
+        console.log('[PostProcessor] Code block content parse failed:', e.message);
+        console.log('[PostProcessor] Attempting JSON repair...');
+        
+        // Try repairing JSON
+        const repaired = this._repairJSON(codeBlockContent);
+        if (repaired) {
+          console.log('[PostProcessor] JSON repair successful');
+          return repaired;
+        }
+        
+        console.log('[PostProcessor] JSON repair also failed');
+        console.log('[PostProcessor] Error details:', e.message);
+        if (e.message.includes('position')) {
+          const posMatch = e.message.match(/position (\d+)/);
+          if (posMatch) {
+            const pos = parseInt(posMatch[1]);
+            const start = Math.max(0, pos - 100);
+            const end = Math.min(codeBlockContent.length, pos + 100);
+            console.log('[PostProcessor] Error context:', codeBlockContent.substring(start, end));
+          }
+        }
+      }
+    } else {
+      console.log('[PostProcessor] No code block found in output');
+    }
+
+    // Step 3: Extract JSON object using balanced brace matching
+    const jsonObject = this._extractJSONObject(cleaned);
+    if (jsonObject) {
+      console.log('[PostProcessor] Extracted JSON object, length:', jsonObject.length);
+      
+      try {
+        return JSON.parse(jsonObject);
+      } catch (e) {
+        console.log('[PostProcessor] Extracted object parse failed, attempting repair...');
+        
+        const repaired = this._repairJSON(jsonObject);
+        if (repaired) {
+          console.log('[PostProcessor] JSON repair successful');
+          return repaired;
+        }
+        
+        console.log('[PostProcessor] Object extraction error:', e.message);
+      }
+    }
+
+    // Step 4: Fallback - find first { to last }
+    const firstBrace = cleaned.indexOf('{');
+    const lastBrace = cleaned.lastIndexOf('}');
+    if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+      const fallbackJson = cleaned.substring(firstBrace, lastBrace + 1);
+      try {
+        return JSON.parse(fallbackJson);
+      } catch (e) {
+        const repaired = this._repairJSON(fallbackJson);
+        if (repaired) {
+          return repaired;
+        }
+        console.log('[PostProcessor] Fallback extraction failed:', e.message);
+      }
+    }
+
+    // Step 5: If all else fails and retries available, signal for retry
+    if (retries < 2 && retryCallback) {
+      console.log('[PostProcessor] All extraction methods failed, attempting corrective re-prompt...');
+      return null; // Signal for retry
+    }
+
+    // Final error - log the original output for debugging
+    console.error('[PostProcessor] All JSON extraction methods failed');
+    console.error('[PostProcessor] Output preview:', cleaned.substring(0, 500));
+    throw new Error(`Failed to parse JSON after ${retries} retries. Output may contain invalid JSON or be in an unexpected format.`);
   }
 
   /**
