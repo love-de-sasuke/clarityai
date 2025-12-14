@@ -1,4 +1,3 @@
-
 /**
  * AI Features routes - Explain and Rewrite
  */
@@ -18,7 +17,7 @@ const router = express.Router();
 router.post('/explain', optionalAuth, async (req, res) => {
   const startTime = Date.now();
   const requestId = generateRequestId();
-
+  
   try {
     const { topic, detailLevel = 'short', includeQuiz = true } = req.body;
 
@@ -102,20 +101,7 @@ router.post('/explain', optionalAuth, async (req, res) => {
     });
   } catch (error) {
     logger.error('Explain endpoint error', error, { requestId, topic: req.body.topic });
-
-    // Save failed request
-    const requestDoc = new Request({
-      requestId,
-      userId: req.userId || null,
-      featureType: 'explain',
-      status: 'failed',
-      input: req.body,
-      errorMessage: error.message,
-      metrics: {
-        duration_ms: Date.now() - startTime
-      }
-    });
-    await requestDoc.save();
+    
     // Try to save failed request (but don't fail if DB save fails)
     try {
       const requestDoc = new Request({
@@ -156,7 +142,6 @@ router.post('/explain', optionalAuth, async (req, res) => {
     res.status(500).json({
       status: 'error',
       requestId,
-      error: error.message
       error: errorMessage
     });
   }
@@ -263,11 +248,10 @@ router.post('/rewrite', optionalAuth, async (req, res) => {
     res.status(500).json({
       status: 'error',
       requestId,
-      error: errormessage
+      error: error.message
     });
   }
 });
 
 export default router;
-
 
