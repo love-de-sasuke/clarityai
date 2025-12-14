@@ -20,7 +20,7 @@ const router = express.Router();
 const storage = multer.memoryStorage();
 const upload = multer({
   storage,
-  limits: { fileSize: 50 * 1024 * 1024 }, // 50MB max
+  limits: { fileSize: 50 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     const allowedMimes = [
       'application/pdf',
@@ -42,7 +42,6 @@ const upload = multer({
 
 /**
  * Upload and initiate document processing
- * Returns 202 Accepted with request ID for polling
  */
 router.post('/upload', optionalAuth, upload.single('file'), async (req, res) => {
   const startTime = Date.now();
@@ -55,7 +54,7 @@ router.post('/upload', optionalAuth, upload.single('file'), async (req, res) => 
 
     const generateRoadmap = req.body.generateRoadmap === 'true' || req.body.generateRoadmap === true;
 
-    // Create initial request document (pending status)
+    // Create initial request document
     const requestDoc = new Request({
       requestId,
       userId: req.userId || null,
@@ -75,46 +74,39 @@ router.post('/upload', optionalAuth, upload.single('file'), async (req, res) => 
     await requestDoc.save();
 
     // Process document asynchronously
-    processDocumentAsync(requestId, req.file, generateRoadmap, req.userId).catch(error => {
-      logger.error(`Async processing failed for ${requestId}`, error);
-    });
+    processDocumentAsync(requestId, req.file, generateRoadmap, req.userId);
 
     // Return 202 Accepted
     res.status(202).json({
       status: 'processing',
       requestId,
-      message: 'Document is being processed. Check status using request ID.',
-      estimatedTime: '30-60 seconds depending on document size'
+      message: 'Document is being processed. Check status using request ID.'
     });
   } catch (error) {
     logger.error('Document upload error', error, { requestId });
 
-    // Try to save error state
-    try {
-      const requestDoc = new Request({
-        requestId,
-        userId: req.userId || null,
-        featureType: 'document',
-        status: 'failed',
-        input: { filename: req.file?.originalname },
-        errorMessage: error.message,
-        metrics: { duration_ms: Date.now() - startTime }
-      });
-      await requestDoc.save();
-    } catch (saveError) {
-      logger.error('Failed to save error state', saveError);
-    }
+    const requestDoc = new Request({
+      requestId,
+      userId: req.userId || null,
+      featureType: 'document',
+      status: 'failed',
+      input: { filename: req.file?.originalname },
+      errorMessage: error.message,
+      metrics: { duration_ms: Date.now() - startTime }
+    });
+
+    await requestDoc.save();
 
     res.status(500).json({
       status: 'error',
       requestId,
-      error: 'Document upload failed: ' + error.message
+      error: error.message
     });
   }
 });
 
 /**
- * Check document processing status and get results
+ * Check document processing status
  */
 router.get('/request/:requestId', optionalAuth, async (req, res) => {
   try {
@@ -134,11 +126,9 @@ router.get('/request/:requestId', optionalAuth, async (req, res) => {
       requestId: req.params.requestId,
       result: requestDoc.result || null,
       error: requestDoc.errorMessage || null,
-      metrics: requestDoc.metrics || null,
-      input: requestDoc.input || null
+      metrics: requestDoc.metrics || null
     });
   } catch (error) {
-    logger.error('Request status check error', error, { requestId: req.params.requestId });
     res.status(500).json({ error: error.message });
   }
 });
@@ -150,31 +140,19 @@ async function processDocumentAsync(requestId, file, generateRoadmap, userId) {
   const processStartTime = Date.now();
   
   const updateRequest = async (status, updates) => {
-    try {
-      await Request.findOneAndUpdate(
-        { requestId },
-        { status, ...updates },
-        { new: true }
-      );
-    } catch (error) {
-      logger.error(`Failed to update request ${requestId}`, error);
-    }
+    await Request.findOneAndUpdate(
+      { requestId },
+      { status, ...updates },
+      { new: true }
+    );
   };
 
   try {
     // Update status to processing
-    await updateRequest('processing', {
-      metrics: { startTime: processStartTime }
-    });
-
-    logger.info(`[Document ${requestId}] Starting document processing`, {
-      filename: file.originalname,
-      size: file.size,
-      roadmap: generateRoadmap
-    });
+    await updateRequest('processing', {});
 
     // Step 1: Extract text from file
-    logger.info(`[Document ${requestId}] Extracting text...`);
+    console.log(`[Document ${requestId}] Extracting text...`);
     const extraction = await fileExtractor.extractText(
       file.buffer,
       file.originalname,
@@ -184,16 +162,12 @@ async function processDocumentAsync(requestId, file, generateRoadmap, userId) {
     // Validate extraction
     const validation = fileExtractor.validateExtraction(extraction.text);
     if (!validation.valid) {
-      throw new Error(`Text extraction failed: ${validation.error}`);
+      throw new Error(validation.error);
     }
 
     // Step 2: Clean text
-    logger.info(`[Document ${requestId}] Cleaning text (${extraction.text.length} chars)...`);
+    console.log(`[Document ${requestId}] Cleaning text...`);
     const cleanedText = documentProcessor.cleanText(extraction.text);
-    
-    if (!cleanedText || cleanedText.trim().length < 50) {
-      throw new Error('Extracted text is too short or empty');
-    }
 
     // Step 3: Decide on summarization strategy
     const useDirectSummarization = documentProcessor.shouldUseDirectSummarization(cleanedText);
@@ -201,40 +175,29 @@ async function processDocumentAsync(requestId, file, generateRoadmap, userId) {
 
     if (useDirectSummarization) {
       // Small document: direct summarization
-      logger.info(`[Document ${requestId}] Using direct summarization (small document)`);
-      result = await summarizeDirectly(cleanedText, generateRoadmap, requestId);
+      console.log(`[Document ${requestId}] Using direct summarization...`);
+      result = await summarizeDirectly(cleanedText, requestId);
     } else {
       // Large document: map-reduce summarization
-      logger.info(`[Document ${requestId}] Using map-reduce summarization (large document)`);
-      result = await summarizeWithMapReduce(cleanedText, generateRoadmap, requestId);
+      console.log(`[Document ${requestId}] Using map-reduce summarization...`);
+      result = await summarizeWithMapReduce(cleanedText, requestId);
     }
 
     // Step 4: Generate roadmap if requested
     if (generateRoadmap && result) {
-      logger.info(`[Document ${requestId}] Generating roadmap...`);
+      console.log(`[Document ${requestId}] Generating roadmap...`);
       try {
         const roadmap = await generateDocumentRoadmap(cleanedText, result, requestId);
         if (roadmap) {
           result.roadmap = roadmap;
-          logger.info(`[Document ${requestId}] Roadmap generated successfully`);
         }
       } catch (roadmapError) {
-        logger.warn(`[Document ${requestId}] Roadmap generation failed: ${roadmapError.message}`);
-        result.roadmap_error = 'Roadmap generation failed: ' + roadmapError.message;
+        console.warn(`[Document ${requestId}] Roadmap generation failed:`, roadmapError.message);
       }
     }
 
-    // Step 5: Sanitize result
+    // Sanitize result
     result = postProcessor.sanitize(result);
-
-    // Add metadata
-    result.document_metadata = {
-      original_filename: file.originalname,
-      file_size: file.size,
-      text_length: cleanedText.length,
-      processing_time_ms: Date.now() - processStartTime,
-      strategy: useDirectSummarization ? 'direct' : 'map-reduce'
-    };
 
     // Update request with results
     await updateRequest('complete', {
@@ -242,20 +205,15 @@ async function processDocumentAsync(requestId, file, generateRoadmap, userId) {
       metrics: {
         duration_ms: Date.now() - processStartTime,
         modelProvider: modelAdapter.getProviderName() || 'unknown',
+        ocrPageCount: extraction.pages,
         extractedChars: cleanedText.length,
-        confidence: result.confidence || 0.75,
-        has_roadmap: generateRoadmap && result.roadmap ? true : false
+        confidence: result.confidence || 0.75
       }
     });
 
-    logger.info(`[Document ${requestId}] Processing complete`, {
-      duration: Date.now() - processStartTime,
-      textLength: cleanedText.length
-    });
+    console.log(`[Document ${requestId}] Processing complete`);
   } catch (error) {
-    logger.error(`Document processing failed for ${requestId}`, error, {
-      duration: Date.now() - processStartTime
-    });
+    console.error(`Document processing failed for ${requestId}:`, error);
 
     await updateRequest('failed', {
       errorMessage: error.message,
@@ -267,9 +225,7 @@ async function processDocumentAsync(requestId, file, generateRoadmap, userId) {
 /**
  * Direct summarization for small documents
  */
-async function summarizeDirectly(text, generateRoadmap, requestId) {
-  logger.debug(`[${requestId}] Direct summarization, text length: ${text.length}`);
-  
+async function summarizeDirectly(text, requestId) {
   const { systemPrompt, userPrompt, metadata } = promptManager.generatePrompt(
     'document',
     { isChunk: false },
@@ -280,23 +236,21 @@ async function summarizeDirectly(text, generateRoadmap, requestId) {
     systemPrompt,
     userPrompt,
     metadata.maxTokens,
-    metadata.stopSequences,
-    { requestId, feature: 'document' }
+    metadata.stopSequences
   );
 
   if (!modelResponse.success) {
-    throw new Error(`Model call failed: ${modelResponse.error}`);
+    throw new Error(modelResponse.error);
   }
 
   let result = postProcessor.parseJSON(modelResponse.content);
   if (!result) {
-    throw new Error('Failed to parse model response as JSON');
+    throw new Error('Failed to parse model response');
   }
 
-  // Validate the schema
   const validation = postProcessor.validateSchema(result, 'document');
   if (!validation.valid) {
-    logger.warn(`[${requestId}] Document validation errors:`, validation.errors);
+    console.warn('Validation errors:', validation.errors);
     result = validation.data;
   }
 
@@ -306,187 +260,86 @@ async function summarizeDirectly(text, generateRoadmap, requestId) {
 /**
  * Map-reduce summarization for large documents
  */
-async function summarizeWithMapReduce(text, generateRoadmap, requestId) {
-  logger.info(`[${requestId}] Starting map-reduce summarization`);
-  
+async function summarizeWithMapReduce(text, requestId) {
   // Step 1: Chunk the document
   const chunks = documentProcessor.chunkDocument(text, 2000, 100);
-  logger.info(`[${requestId}] Document chunked into ${chunks.length} parts`);
+  console.log(`[MapReduce] Processing ${chunks.length} chunks...`);
 
   // Step 2: Map stage - summarize each chunk
   const chunkResults = [];
-  const chunkErrors = [];
-  
   for (let i = 0; i < chunks.length; i++) {
-    const chunk = chunks[i];
-    logger.debug(`[${requestId}] Processing chunk ${i + 1}/${chunks.length} (${chunk.text.length} chars)`);
+    console.log(`[MapReduce] Processing chunk ${i + 1}/${chunks.length}...`);
 
-    try {
-      const { systemPrompt, userPrompt, metadata } = promptManager.generatePrompt(
-        'document',
-        { isChunk: true },
-        chunk.text
-      );
+    const { systemPrompt, userPrompt, metadata } = promptManager.generatePrompt(
+      'document',
+      { isChunk: true },
+      chunks[i].text
+    );
 
-      const modelResponse = await modelAdapter.callModel(
-        systemPrompt,
-        userPrompt,
-        metadata.maxTokens,
-        metadata.stopSequences,
-        { requestId, feature: 'document_chunk', chunkIndex: i }
-      );
+    const modelResponse = await modelAdapter.callModel(
+      systemPrompt,
+      userPrompt,
+      metadata.maxTokens,
+      metadata.stopSequences
+    );
 
-      if (modelResponse.success) {
-        const parsed = postProcessor.parseJSON(modelResponse.content);
-        if (parsed) {
-          chunkResults.push({
-            ...parsed,
-            chunk_index: i,
-            chunk_length: chunk.text.length
-          });
-        } else {
-          chunkErrors.push({ chunk: i, error: 'Failed to parse chunk response' });
-        }
-      } else {
-        chunkErrors.push({ chunk: i, error: modelResponse.error });
-      }
-    } catch (error) {
-      chunkErrors.push({ chunk: i, error: error.message });
-      logger.warn(`[${requestId}] Chunk ${i} processing error: ${error.message}`);
-    }
-
-    // Small delay to prevent rate limiting
-    if (i < chunks.length - 1) {
-      await new Promise(resolve => setTimeout(resolve, 100));
+    if (modelResponse.success) {
+      const parsed = postProcessor.parseJSON(modelResponse.content);
+      chunkResults.push(parsed);
+    } else {
+      console.warn(`Chunk ${i} failed: ${modelResponse.error}`);
+      chunkResults.push({
+        chunk_summary: '',
+        chunk_action_items: [],
+        chunk_keywords: []
+      });
     }
   }
 
-  // Log chunk processing results
-  logger.info(`[${requestId}] Chunk processing complete: ${chunkResults.length} succeeded, ${chunkErrors.length} failed`);
+  // Step 3: Reduce stage - combine summaries
+  console.log('[MapReduce] Reducing chunk summaries...');
+  const reduced = documentProcessor.reduceChunkSummaries(chunkResults);
 
-  // Step 3: Combine chunk summaries for final processing
-  const combinedSummary = combineChunkSummaries(chunkResults);
-  
-  if (!combinedSummary || combinedSummary.trim().length === 0) {
-    throw new Error('All chunk processing failed, cannot generate summary');
-  }
-
-  // Step 4: Generate final summary from combined chunk summaries
-  logger.info(`[${requestId}] Generating final summary from ${chunkResults.length} chunks`);
+  // Step 4: Create reduce prompt from combined summaries
+  const reducePrompt = documentProcessor.createReducePrompt(chunkResults);
   
   const { systemPrompt, userPrompt, metadata } = promptManager.generatePrompt(
     'document',
     { isChunk: false },
-    combinedSummary
+    reducePrompt
   );
 
   const finalResponse = await modelAdapter.callModel(
     systemPrompt,
     userPrompt,
-    metadata.maxTokens,
-    metadata.stopSequences,
-    { requestId, feature: 'document_final' }
+    3000,
+    metadata.stopSequences
   );
 
   if (!finalResponse.success) {
-    throw new Error(`Final summary generation failed: ${finalResponse.error}`);
+    throw new Error(finalResponse.error);
   }
 
   let result = postProcessor.parseJSON(finalResponse.content);
   if (!result) {
-    // Fallback: create a basic summary from chunks
-    logger.warn(`[${requestId}] Final parse failed, using fallback summary`);
-    result = createFallbackSummary(chunkResults);
+    // Fallback: use reduced results
+    result = {
+      summary_short: reduced.summaries.slice(0, 2).join(' ') || 'Document summary',
+      highlights: reduced.highlights || [],
+      action_items: reduced.actionItems || [],
+      keywords: reduced.keywords || []
+    };
   }
-
-  // Add chunk processing metadata
-  result.chunk_processing = {
-    total_chunks: chunks.length,
-    successful_chunks: chunkResults.length,
-    failed_chunks: chunkErrors.length,
-    errors: chunkErrors.slice(0, 5) // Limit error details
-  };
 
   return result;
-}
-
-/**
- * Combine chunk summaries into a single text
- */
-function combineChunkSummaries(chunkResults) {
-  if (!chunkResults || chunkResults.length === 0) {
-    return '';
-  }
-
-  const parts = [];
-  
-  // Add chunk summaries
-  const summaries = chunkResults
-    .filter(chunk => chunk.chunk_summary && chunk.chunk_summary.trim())
-    .map(chunk => chunk.chunk_summary.trim());
-  
-  parts.push('## Document Chunk Summaries\n\n' + summaries.join('\n\n'));
-
-  // Add action items
-  const allActionItems = chunkResults
-    .flatMap(chunk => chunk.chunk_action_items || [])
-    .filter(item => item && item.trim())
-    .map(item => `- ${item.trim()}`);
-  
-  if (allActionItems.length > 0) {
-    parts.push('## Key Action Items\n\n' + allActionItems.join('\n'));
-  }
-
-  // Add keywords
-  const allKeywords = chunkResults
-    .flatMap(chunk => chunk.chunk_keywords || [])
-    .filter(keyword => keyword && keyword.trim())
-    .map(keyword => keyword.trim());
-  
-  const uniqueKeywords = [...new Set(allKeywords)];
-  if (uniqueKeywords.length > 0) {
-    parts.push('## Keywords\n\n' + uniqueKeywords.join(', '));
-  }
-
-  return parts.join('\n\n');
-}
-
-/**
- * Create fallback summary when final processing fails
- */
-function createFallbackSummary(chunkResults) {
-  const summaries = chunkResults
-    .filter(chunk => chunk.chunk_summary)
-    .map(chunk => chunk.chunk_summary.trim())
-    .filter(summary => summary.length > 0);
-
-  const actionItems = chunkResults
-    .flatMap(chunk => chunk.chunk_action_items || [])
-    .filter(item => item && item.trim());
-
-  const keywords = chunkResults
-    .flatMap(chunk => chunk.chunk_keywords || [])
-    .filter(keyword => keyword && keyword.trim());
-
-  // Deduplicate keywords
-  const uniqueKeywords = [...new Set(keywords)];
-
-  return {
-    summary_short: summaries.slice(0, 3).join(' ') || 'Document processed but summary generation failed.',
-    highlights: summaries.slice(0, 5),
-    action_items: actionItems.slice(0, 7),
-    keywords: uniqueKeywords.slice(0, 10),
-    is_fallback: true
-  };
 }
 
 /**
  * Generate roadmap based on document content
  */
 async function generateDocumentRoadmap(text, summary, requestId) {
-  logger.debug(`[${requestId}] Generating document roadmap`);
+  console.log(`[${requestId}] Generating document roadmap`);
   
-  // Extract main topics/keywords for roadmap
   const roadmapPrompt = `Based on this document summary, create a learning roadmap.
   
 Document Summary:
@@ -507,8 +360,7 @@ Each resource should have: title, url (or "none" if not applicable).`;
     systemPrompt,
     roadmapPrompt,
     2000,
-    ['\n}\n', '\n}', '}\n', '}'],
-    { requestId, feature: 'document_roadmap' }
+    ['\n}\n', '\n}', '}\n', '}']
   );
 
   if (!modelResponse.success) {
@@ -523,7 +375,7 @@ Each resource should have: title, url (or "none" if not applicable).`;
   // Validate roadmap
   const validation = postProcessor.validateSchema(roadmap, 'roadmap');
   if (!validation.valid) {
-    logger.warn(`[${requestId}] Roadmap validation errors:`, validation.errors);
+    console.warn(`[${requestId}] Roadmap validation errors:`, validation.errors);
   }
 
   return roadmap;
