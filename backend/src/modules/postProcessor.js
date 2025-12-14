@@ -8,29 +8,97 @@ class PostProcessor {
    * Parse and validate JSON from LLM output
    */
   parseJSON(output, retryCallback = null, retries = 0) {
+    if (!output || typeof output !== 'string') {
+      throw new Error('Invalid output: expected string');
+    }
+
+    // Clean the output first
+    let cleaned = output.trim();
+
     try {
-      // Try direct parse
-      return JSON.parse(output);
+      // Try direct parse first
+      return JSON.parse(cleaned);
     } catch (error) {
       console.log('[PostProcessor] Direct parse failed, attempting extraction...');
       
-      // Try extracting JSON from code blocks
-      const jsonMatch = output.match(/```(?:json)?\s*([\s\S]*?)```/);
-      if (jsonMatch) {
+      // Try extracting JSON from markdown code blocks (multiple patterns)
+      // Pattern 1: ```json\n...\n``` (most common with Gemini)
+      let jsonMatch = cleaned.match(/```json\s*\n?([\s\S]*?)\n?```/i);
+      if (!jsonMatch) {
+        // Pattern 2: ```json ... ``` (without newlines)
+        jsonMatch = cleaned.match(/```json\s*([\s\S]*?)```/i);
+      }
+      if (!jsonMatch) {
+        // Pattern 3: ``` ... ``` (without json tag)
+        jsonMatch = cleaned.match(/```\s*\n?([\s\S]*?)\n?```/);
+      }
+      if (!jsonMatch) {
+        // Pattern 4: ```json\n...``` (ending without newline)
+        jsonMatch = cleaned.match(/```json\s*\n([\s\S]*?)```/i);
+      }
+      
+      if (jsonMatch && jsonMatch[1]) {
         try {
-          return JSON.parse(jsonMatch[1]);
+          // Clean the extracted content - remove leading/trailing whitespace and newlines
+          let jsonContent = jsonMatch[1].trim();
+          // Remove any leading/trailing quotes if present
+          jsonContent = jsonContent.replace(/^["']|["']$/g, '');
+          return JSON.parse(jsonContent);
         } catch (e) {
-          console.log('[PostProcessor] Code block parse failed');
+          console.log('[PostProcessor] Code block parse failed:', e.message);
+          console.log('[PostProcessor] Extracted content:', jsonMatch[1].substring(0, 200));
         }
       }
 
-      // Try finding JSON object
-      const objectMatch = output.match(/\{[\s\S]*\}/);
+      // Try finding JSON object with balanced braces (more robust)
+      // This handles cases where JSON is not in code blocks
+      const jsonObjectPattern = /\{[\s\S]*\}/;
+      const objectMatch = cleaned.match(jsonObjectPattern);
       if (objectMatch) {
         try {
+          // Try to find the complete JSON object by counting braces
+          let jsonStr = '';
+          let braceCount = 0;
+          let startIndex = -1;
+          
+          for (let i = 0; i < cleaned.length; i++) {
+            if (cleaned[i] === '{') {
+              if (startIndex === -1) startIndex = i;
+              braceCount++;
+            } else if (cleaned[i] === '}') {
+              braceCount--;
+              if (braceCount === 0 && startIndex !== -1) {
+                jsonStr = cleaned.substring(startIndex, i + 1);
+                break;
+              }
+            }
+          }
+          
+          if (jsonStr) {
+            return JSON.parse(jsonStr);
+          }
+          
+          // Fallback to simple match
           return JSON.parse(objectMatch[0]);
         } catch (e) {
-          console.log('[PostProcessor] Object extraction failed');
+          console.log('[PostProcessor] Object extraction failed:', e.message);
+        }
+      }
+
+      // Try removing markdown formatting and extra text
+      // Remove any text before the first {
+      const firstBrace = cleaned.indexOf('{');
+      if (firstBrace !== -1) {
+        try {
+          const jsonOnly = cleaned.substring(firstBrace);
+          // Remove any text after the last }
+          const lastBrace = jsonOnly.lastIndexOf('}');
+          if (lastBrace !== -1) {
+            const finalJson = jsonOnly.substring(0, lastBrace + 1);
+            return JSON.parse(finalJson);
+          }
+        } catch (e) {
+          console.log('[PostProcessor] Brace-based extraction failed:', e.message);
         }
       }
 
