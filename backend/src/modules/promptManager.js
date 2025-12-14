@@ -52,11 +52,16 @@ class PromptManager {
 Topic: ${topic}
 Detail level: ${detailLevel}
 
-Return ONLY valid JSON with these exact keys: summary, examples (array of 3 strings), bullets (array of strings), keywords (array of strings), quiz (array of 5 objects).
+Return ONLY valid JSON, using these exact keys: summary, examples (array of 3 strings), bullets (array of strings), keywords (array of strings), quiz (array of 5 objects).
 
 Quiz format: [{"q":"question","options":["a","b","c","d"],"answer":0}]
 
-IMPORTANT: Return ONLY the JSON object. No markdown, no code blocks, no backticks, no extra text. Start with { and end with }. Ensure all commas are present in arrays.`;
+OUTPUT REQUIREMENTS (IMPORTANT):
+- DO NOT return any markdown, code blocks or backticks.
+- DO NOT add ANY extra text before or after the JSON object.
+- START your output with '{' and END your output with '}'.
+- ENSURE every array or object uses proper commas between elements.
+- Only valid JSON is accepted.`;
   }
 
   _generateRoadmapPrompt(params) {
