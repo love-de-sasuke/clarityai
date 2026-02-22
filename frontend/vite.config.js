@@ -6,5 +6,13 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     sourcemap: false
+  },
+  server: {
+    proxy: {
+      '/api': {
+        target: 'http://localhost:5000',
+        changeOrigin: true,
+      }
+    }
   }
 })

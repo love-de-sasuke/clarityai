@@ -31,7 +31,7 @@ router.post('/roadmap', optionalAuth, async (req, res) => {
     );
 
     // Call model
-    const modelResponse = await modelAdapter.callModel(
+    let modelResponse = await modelAdapter.callModel(
       systemPrompt,
       userPrompt,
       metadata.maxTokens
@@ -44,7 +44,32 @@ router.post('/roadmap', optionalAuth, async (req, res) => {
     // Parse and validate
     let result = postProcessor.parseJSON(modelResponse.content);
     if (!result) {
-      throw new Error('Failed to parse model response');
+      // First attempt failed, try with corrective prompt
+      console.warn('[Roadmap] Initial JSON parsing failed. Retrying with corrective prompt...');
+      
+      const corrective = promptManager.generateCorrectivePrompt(
+        'roadmap',
+        modelResponse.content,
+        'Initial response was not valid JSON.'
+      );
+      
+      modelResponse = await modelAdapter.callModel(
+        corrective.systemPrompt,
+        corrective.userPrompt,
+        corrective.metadata.maxTokens
+      );
+
+      if (!modelResponse.success) {
+        throw new Error(`Corrective re-prompt also failed: ${modelResponse.error}`);
+      }
+      
+      result = postProcessor.parseJSON(modelResponse.content);
+      
+      if (!result) {
+        // Log the failed output for debugging
+        console.error('[Roadmap] Corrective JSON parsing also failed. Final model output:', modelResponse.content);
+        throw new Error('Failed to parse model response even after corrective re-prompt.');
+      }
     }
 
     const validation = postProcessor.validateSchema(result, 'roadmap');
