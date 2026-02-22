@@ -47,3 +47,14 @@ export function parseConfidence(confidenceStr) {
     return 0.5;
   }
 }
+
+export function safeJsonParse(str, defaultValue = null) {
+  if (typeof str !== 'string') {
+    return defaultValue;
+  }
+  try {
+    return JSON.parse(str);
+  } catch (e) {
+    return defaultValue;
+  }
+}

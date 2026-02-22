@@ -99,10 +99,21 @@ function ExplainTab() {
             <h3>Keywords</h3>
             <div className="keywords">
               {result.keywords?.map((keyword, idx) => (
-                <span key={idx} className="keyword-tag">{keyword}</span>
+                <span key={idx} className="keyword-tag" onClick={() => setTopic(keyword)}>{keyword}</span>
               ))}
             </div>
           </div>
+
+          {result.related_topics && result.related_topics.length > 0 && (
+            <div className="result-section">
+              <h3>Related Topics</h3>
+              <div className="keywords">
+                {result.related_topics.map((topic, idx) => (
+                  <span key={idx} className="keyword-tag" onClick={() => setTopic(topic)}>{topic}</span>
+                ))}
+              </div>
+            </div>
+          )}
 
           {result.quiz && (
             <div className="result-section">

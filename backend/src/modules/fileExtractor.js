@@ -5,12 +5,16 @@
 
 import pdfParse from 'pdf-parse';
 import Tesseract from 'tesseract.js';
-import mammoth from 'mammoth'; // Implementation added
 import fs from 'fs';
-import os from 'os';
-import path from 'path';
 
 class FileExtractor {
+  /**
+   * Extract text from uploaded file
+   * @param {Buffer} fileBuffer - File content
+   * @param {String} filename - Original filename
+   * @param {String} mimetype - File MIME type
+   * @returns {Promise<{text: String, format: String, pages: Number}>}
+   */
   async extractText(fileBuffer, filename, mimetype) {
     try {
       if (mimetype === 'application/pdf' || filename.endsWith('.pdf')) {
@@ -22,7 +26,7 @@ class FileExtractor {
         return await this._extractFromDOCX(fileBuffer);
       }
       
-      if (mimetype.startsWith('image/') || filename.match(/\\.(png|jpg|jpeg|gif|bmp)$/i)) {
+      if (mimetype.startsWith('image/') || filename.match(/\.(png|jpg|jpeg|gif|bmp)$/i)) {
         return await this._extractFromImage(fileBuffer);
       }
 
@@ -34,35 +38,53 @@ class FileExtractor {
         };
       }
 
-      throw new Error('Unsupported file format');
+      throw new Error(`Unsupported file type: ${mimetype}`);
     } catch (error) {
-      console.error('[FileExtractor] Error:', error.message);
-      throw error;
+      throw new Error(`File extraction failed: ${error.message}`);
     }
   }
 
+  /**
+   * Extract text from PDF
+   */
   async _extractFromPDF(fileBuffer) {
     try {
       const data = await pdfParse(fileBuffer);
-      let text = data.text;
-
-      // Lowered threshold to 10 chars to avoid false negatives on small docs
-      if (!text || text.trim().length < 10) {
-        return { text: "[Empty or Scanned PDF - OCR required]", format: 'pdf', pages: data.numpages };
+      
+      let text = data.text || '';
+      
+      // Fallback to OCR if PDF has no text (scanned images)
+      if (!text || text.trim().length < 50) {
+        console.log('[FileExtractor] PDF has no embedded text, attempting OCR...');
+        // This would require rendering PDF pages to images first
+        // For now, we'll note this limitation
+        text = '[PDF requires OCR - pages are image-based]';
       }
 
-      return { text: text, format: 'pdf', pages: data.numpages };
+      return {
+        text,
+        format: 'pdf',
+        pages: data.numpages || 1
+      };
     } catch (error) {
       throw new Error(`PDF extraction failed: ${error.message}`);
     }
   }
 
+  /**
+   * Extract text from DOCX
+   * Note: This is a simplified implementation
+   * For production, use 'mammoth' or 'docx' npm packages
+   */
   async _extractFromDOCX(fileBuffer) {
     try {
-      // FIXED: Actually using mammoth to extract text
-      const result = await mammoth.extractRawText({ buffer: fileBuffer });
+      // Simplified: DOCX is a ZIP file with XML content
+      // This would require additional libraries like 'mammoth'
+      // For MVP, we'll return a placeholder
+      console.log('[FileExtractor] DOCX support requires "mammoth" package');
+      
       return {
-        text: result.value,
+        text: '[DOCX file - requires mammoth package for full extraction]',
         format: 'docx',
         pages: 1
       };
@@ -71,28 +93,51 @@ class FileExtractor {
     }
   }
 
+  /**
+   * Extract text from image using Tesseract OCR
+   */
   async _extractFromImage(fileBuffer) {
-    // FIXED: Using os.tmpdir() for cross-platform compatibility (Windows/Linux)
-    const tempPath = path.join(os.tmpdir(), `ocr_${Date.now()}.jpg`);
     try {
+      // Save buffer to temp file (Tesseract requires file path)
+      const tempPath = `/tmp/ocr_${Date.now()}.jpg`;
       fs.writeFileSync(tempPath, fileBuffer);
 
+      // Run OCR
       const { data: { text } } = await Tesseract.recognize(
         tempPath,
-        'eng'
+        'eng',
+        { logger: (m) => console.log('[OCR]', m.status, m.progress) }
       );
 
-      if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+      // Cleanup temp file
+      fs.unlinkSync(tempPath);
 
-      if (!text || text.trim().length < 5) {
+      if (!text || text.trim().length < 20) {
         throw new Error('OCR extracted no readable text');
       }
 
-      return { text, format: 'image', pages: 1 };
+      return {
+        text,
+        format: 'image',
+        pages: 1
+      };
     } catch (error) {
-      if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
       throw new Error(`Image OCR failed: ${error.message}`);
     }
+  }
+
+  /**
+   * Validate extracted text quality
+   */
+  validateExtraction(text, minChars = 50) {
+    if (!text || text.trim().length < minChars) {
+      return {
+        valid: false,
+        error: `Extracted text too short (${text.length} chars, min ${minChars})`
+      };
+    }
+
+    return { valid: true };
   }
 }
 

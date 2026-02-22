@@ -11,7 +11,7 @@ import modelAdapter from '../modules/modelAdapter.js';
 import postProcessor from '../modules/postProcessor.js';
 import Request from '../models/Request.js';
 import { optionalAuth } from '../middleware/auth.js';
-import { generateRequestId } from '../utils/helpers.js';
+import { generateRequestId, safeJsonParse } from '../utils/helpers.js';
 import logger from '../utils/logger.js';
 
 const router = express.Router();
@@ -224,14 +224,13 @@ async function processDocumentAsync(requestId, file, generateRoadmap, userId) {
 async function summarizeDirectly(text, generateRoadmap) {
   const { systemPrompt, userPrompt, metadata } = promptManager.generatePrompt(
     'document',
-    { isChunk: false }
+    { isChunk: false },
+    text
   );
-
-  const fullPrompt = userPrompt.replace('<<chunk text>>', text);
 
   const modelResponse = await modelAdapter.callModel(
     systemPrompt,
-    fullPrompt,
+    userPrompt,
     metadata.maxTokens
   );
 
@@ -239,7 +238,7 @@ async function summarizeDirectly(text, generateRoadmap) {
     throw new Error(modelResponse.error);
   }
 
-  let result = postProcessor.parseJSON(modelResponse.content);
+  let result = safeJsonParse(modelResponse.content);
   if (!result) {
     throw new Error('Failed to parse model response');
   }
@@ -280,7 +279,7 @@ async function summarizeWithMapReduce(text, generateRoadmap) {
     );
 
     if (modelResponse.success) {
-      const parsed = postProcessor.parseJSON(modelResponse.content);
+      const parsed = safeJsonParse(modelResponse.content);
       chunkResults.push(parsed);
     } else {
       console.warn(`Chunk ${i} failed: ${modelResponse.error}`);
@@ -297,7 +296,7 @@ async function summarizeWithMapReduce(text, generateRoadmap) {
   const reduced = documentProcessor.reduceChunkSummaries(chunkResults);
 
   // Step 4: Generate final summary
-  const { systemPrompt, userPrompt } = promptManager.generatePrompt('document', {});
+  const { systemPrompt } = promptManager.generatePrompt('document', { isChunk: false });
   const reducePrompt = documentProcessor.createReducePrompt(chunkResults, generateRoadmap);
 
   const finalResponse = await modelAdapter.callModel(
@@ -310,14 +309,16 @@ async function summarizeWithMapReduce(text, generateRoadmap) {
     throw new Error(finalResponse.error);
   }
 
-  let result = postProcessor.parseJSON(finalResponse.content);
+  let result = safeJsonParse(finalResponse.content);
   if (!result) {
     // Fallback: use reduced results
+    console.warn('Failed to parse final summary, using fallback.');
     result = {
-      summary_short: reduced.summaries.slice(0, 2).join(' '),
+      summary_short: reduced.summaries.join(' '),
       highlights: reduced.highlights,
       action_items: reduced.actionItems,
-      keywords: reduced.keywords
+      keywords: reduced.keywords,
+      generated_roadmap: null
     };
   }
 

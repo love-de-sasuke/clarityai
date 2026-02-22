@@ -61,6 +61,9 @@ function RewriteTab() {
             <option value="short">Short & Concise</option>
             <option value="assertive">Assertive & Bold</option>
             <option value="persuasive">Persuasive</option>
+            <option value="empathetic">Empathetic</option>
+            <option value="humorous">Humorous</option>
+            <option value="academic">Academic</option>
           </select>
         </div>
 
@@ -81,6 +84,7 @@ function RewriteTab() {
               <div key={idx} className="rewrite-variation">
                 <p><strong>{rewrite.tone}</strong></p>
                 <p>{rewrite.text}</p>
+                <button onClick={() => navigator.clipboard.writeText(rewrite.text)}>Copy</button>
               </div>
             ))}
           </div>
@@ -90,7 +94,7 @@ function RewriteTab() {
               <h3>Subject Suggestions</h3>
               <ul>
                 {result.subject_suggestions.map((subject, idx) => (
-                  <li key={idx}>{subject}</li>
+                  <li key={idx} onClick={() => navigator.clipboard.writeText(subject)} style={{cursor: 'pointer'}}>{subject}</li>
                 ))}
               </ul>
             </div>

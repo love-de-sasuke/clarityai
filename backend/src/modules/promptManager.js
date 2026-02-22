@@ -79,6 +79,7 @@ RETURN ONLY VALID JSON with these exact fields:
 - examples: array of EXACTLY 3 strings
 - bullets: array of strings (5-10 bullet points)
 - keywords: array of strings (5-10 relevant keywords)
+- related_topics: array of strings (3-5 related topics)
 - quiz: array of EXACTLY 5 objects, each with: "q" (question), "options" (array of 4 strings), "answer" (number 0-3)
 
 QUIZ FORMAT EXAMPLE:
@@ -98,6 +99,7 @@ IMPORTANT:
 EXPERIENCE LEVEL: ${level}
 
 RETURN ONLY VALID JSON with these exact fields:
+- prerequisites: array of strings (3-5 essential skills or knowledge required before starting)
 - weeks: array of objects, each with:
   * week_number: number (1-${timeframeWeeks})
   * tasks: array of 3-5 strings (specific, actionable tasks)
@@ -128,7 +130,7 @@ ${text}
 
 RETURN ONLY VALID JSON with these exact fields:
 - rewrites: array of EXACTLY 3 objects, each with:
-  * tone: string (e.g., "formal", "casual", "persuasive")
+  * tone: string (e.g., "formal", "casual", "persuasive", "empathetic", "humorous", "academic")
   * text: string (the rewritten text)
 - subject_suggestions: array of 3-5 strings (alternative subject lines/titles)
 - caption: string (10-12 word summary caption)
@@ -137,7 +139,7 @@ RETURN ONLY VALID JSON with these exact fields:
 
 IMPORTANT:
 - Return ONLY plain JSON, no markdown
-- All 3 rewrites must be in different tones (e.g., formal, casual, persuasive)
+- All 3 rewrites must be in different tones. Include a variety of tones from the list: formal, casual, persuasive, empathetic, humorous, academic.
 - Ensure each rewrite is complete and coherent
 - Do NOT cut off any text mid-sentence
 - Confidence MUST be a decimal number, not a word

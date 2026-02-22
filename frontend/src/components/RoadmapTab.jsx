@@ -87,6 +87,17 @@ function RoadmapTab() {
 
       {result && (
         <div className="result-container">
+          {result.prerequisites && result.prerequisites.length > 0 && (
+            <div className="result-section">
+              <h3>Prerequisites</h3>
+              <ul>
+                {result.prerequisites.map((prerequisite, idx) => (
+                  <li key={idx}>{prerequisite}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+
           <div className="result-section">
             <h3>Weeks Breakdown</h3>
             <div className="roadmap-weeks">

@@ -3,7 +3,7 @@
  * Per markdown.md section 5: Document processing pipeline
  */
 
-import { chunkText } from '../utils/helpers.js';
+import { chunkText, safeJsonParse } from '../utils/helpers.js';
 
 class DocumentProcessor {
   /**
@@ -55,18 +55,16 @@ class DocumentProcessor {
    * Extract key information from chunk summaries (map stage)
    */
   parseChunkResult(chunkResult) {
-    try {
-      if (typeof chunkResult === 'string') {
-        return JSON.parse(chunkResult);
-      }
-      return chunkResult;
-    } catch (error) {
-      return {
-        chunk_summary: '',
-        chunk_action_items: [],
-        chunk_keywords: []
-      };
+    const defaultResult = {
+      chunk_summary: '',
+      chunk_action_items: [],
+      chunk_keywords: []
+    };
+
+    if (typeof chunkResult === 'string') {
+      return safeJsonParse(chunkResult, defaultResult);
     }
+    return chunkResult || defaultResult;
   }
 
   /**
@@ -116,13 +114,7 @@ class DocumentProcessor {
     
     return unique
       .slice(0, limit)
-      .map(item => {
-        try {
-          return JSON.parse(item);
-        } catch {
-          return item;
-        }
-      });
+      .map(item => safeJsonParse(item, item));
   }
 
   /**
@@ -139,18 +131,22 @@ ${chunk}`;
    * Create a reduce prompt for final summarization
    */
   createReducePrompt(chunkResults, generateRoadmap = false) {
-    const resultsStr = chunkResults.map((r, i) => 
-      `Chunk ${i}: ${typeof r === 'string' ? r : JSON.stringify(r)}`
-    ).join('\n\n');
+    const reduced = this.reduceChunkSummaries(chunkResults);
 
-    let prompt = `Combine the following chunk summaries into a final document summary. Deduplicate action items and create global keywords.
-Input summaries:
-${resultsStr}
+    const summaries = reduced.summaries.join('\n');
+    const actionItems = reduced.actionItems.join(', ');
+    const keywords = reduced.keywords.join(', ');
 
-Return JSON with keys: summary_short, highlights, action_items, keywords`;
+    let prompt = `Synthesize the following information into a final document summary.
+- Main Summaries: ${summaries}
+- Key Action Items: ${actionItems}
+- Global Keywords: ${keywords}
+
+Based on this, generate a concise final summary, a short list of highlights, deduplicated action items, and a list of global keywords.
+Return ONLY valid JSON with keys: summary_short, highlights, action_items, keywords`;
 
     if (generateRoadmap) {
-      prompt += `, generated_roadmap`;
+      prompt += `, and a generated_roadmap. The roadmap should be a structured learning plan based on the document's content.`;
     }
 
     return prompt;
